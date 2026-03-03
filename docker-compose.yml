@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: chatbot_sop_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: chatbot_sop_db
+    ports:
+      - '3306:3306'
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - chatbot_network
+
+  # Tambahkan bagian phpmyadmin ini
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: chatbot_sop_pma
+    restart: always
+    ports:
+      - '8080:80' # Akses phpMyAdmin di port 8080
+    environment:
+      PMA_HOST: mysql # Harus sama dengan nama service database di atas
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: rootpassword
+    networks:
+      - chatbot_network
+    depends_on:
+      - mysql
+
+volumes:
+  mysql_data:
+
+networks:
+  chatbot_network:
+    driver: bridge
