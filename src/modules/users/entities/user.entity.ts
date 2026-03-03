@@ -1,36 +1,55 @@
-import { ChatSession } from 'src/modules/chat/entities/chat-session.entity';
-import { SopDocument } from 'src/modules/sop-documents/entities/sop-document.entity';
-import { 
-  Entity, 
-  PrimaryGeneratedColumn, 
-  Column, 
-  CreateDateColumn, 
-  UpdateDateColumn, 
-  OneToMany 
+// FILE: src/modules/users/entities/user.entity.ts
+
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  OneToMany,
 } from 'typeorm';
+import { ChatSession } from '../../chat/entities/chat-session.entity';
+import { SopDocument } from '../../sop-documents/entities/sop-document.entity';
+
+export enum UserRole {
+  USER = 'USER',
+  ADMIN = 'ADMIN',
+}
 
 @Entity('users')
 export class User {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+  @PrimaryGeneratedColumn()
+  id: number;
 
-  @Column({ type: 'varchar', length: 255 })
+  @Column({ type: 'varchar', length: 100, nullable: false })
   name: string;
 
-  @Column({ type: 'varchar', length: 255, unique: true })
+  @Column({ type: 'varchar', length: 150, nullable: false, unique: true })
   email: string;
 
-  // Relasi 1 : N ke sop_documents
-  @OneToMany(() => SopDocument, (sopDocument) => sopDocument.uploadedBy)
-  sopDocuments: SopDocument[];
+  @Column({ type: 'varchar', length: 255, nullable: false })
+  password_hash: string;
 
-  // Relasi 1 : N ke chat_sessions
-  @OneToMany(() => ChatSession, (chatSession) => chatSession.user)
-  chatSessions: ChatSession[];
+  @Column({
+    type: 'enum',
+    enum: UserRole,
+    default: UserRole.USER,
+    nullable: false,
+  })
+  role: UserRole;
 
-  @CreateDateColumn({ name: 'created_at' })
-  createdAt: Date;
+  @Column({ type: 'int', nullable: true, default: null })
+  admin_level: number;
 
-  @UpdateDateColumn({ name: 'updated_at' })
-  updatedAt: Date;
+  @Column({ type: 'datetime', nullable: true, default: null })
+  last_login: Date;
+
+  @CreateDateColumn({ type: 'datetime' })
+  created_at: Date;
+
+  // ── Relasi ──────────────────────────────────────────
+  @OneToMany(() => ChatSession, (session) => session.user)
+  chat_sessions: ChatSession[];
+
+  @OneToMany(() => SopDocument, (doc) => doc.uploaded_by_user)
+  sop_documents: SopDocument[];
 }

@@ -1,33 +1,49 @@
-import { 
-  Entity, 
-  PrimaryGeneratedColumn, 
-  Column, 
-  CreateDateColumn, 
-  UpdateDateColumn, 
-  ManyToOne, 
-  JoinColumn 
+// FILE: src/modules/sop-documents/entities/sop-document.entity.ts
+
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
+export enum SopFormat {
+  PDF = 'PDF',
+  TXT = 'TXT',
+}
+
 @Entity('sop_documents')
 export class SopDocument {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
+  @PrimaryGeneratedColumn()
+  id: number;
 
-  @Column({ type: 'varchar', length: 255 })
+  @Column({ type: 'varchar', length: 200, nullable: false })
   title: string;
 
-  @Column({ type: 'text' })
-  content: string; // Bisa berupa raw text atau path ke file PDF
+  @Column({ type: 'longtext', nullable: false })
+  content: string;
 
-  // FK: uploaded_by -> users.id
-  @ManyToOne(() => User, (user) => user.sopDocuments, { onDelete: 'SET NULL' })
+  @Column({
+    type: 'enum',
+    enum: SopFormat,
+    nullable: false,
+  })
+  format: SopFormat;
+
+  @Column({ type: 'bigint', nullable: false, comment: 'in bytes' })
+  file_size: number;
+
+  @CreateDateColumn({ type: 'datetime' })
+  uploaded_at: Date;
+
+  // ── Relasi ──────────────────────────────────────────
+  @ManyToOne(() => User, (user) => user.sop_documents, {
+    nullable: false,
+    onDelete: 'RESTRICT', // tidak bisa hapus user jika masih punya SOP
+  })
   @JoinColumn({ name: 'uploaded_by' })
-  uploadedBy: User;
-
-  @CreateDateColumn({ name: 'created_at' })
-  createdAt: Date;
-
-  @UpdateDateColumn({ name: 'updated_at' })
-  updatedAt: Date;
+  uploaded_by_user: User;
 }
