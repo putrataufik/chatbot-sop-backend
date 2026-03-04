@@ -1,4 +1,132 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { SopDocument, SopFormat } from './entities/sop-document.entity';
+import { CreateSopDto } from './dto/create-sop.dto';
+import { User } from '../users/entities/user.entity';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
 
 @Injectable()
-export class SopDocumentsService {}
+export class SopDocumentsService {
+  constructor(
+    @InjectRepository(SopDocument)
+    private sopRepository: Repository<SopDocument>,
+  ) {}
+
+  private async extractContent(
+    fileBuffer: Buffer,
+    format: SopFormat,
+  ): Promise<string> {
+    if (format === SopFormat.TXT) {
+      return fileBuffer.toString('utf-8');
+    }
+
+    if (format === SopFormat.PDF) {
+      try {
+        const uint8Array = new Uint8Array(fileBuffer);
+
+        const loadingTask = pdfjsLib.getDocument({
+          data: uint8Array,
+          useWorkerFetch: false,
+          isEvalSupported: false,
+          useSystemFonts: true,
+        });
+
+        const pdf = await loadingTask.promise;
+        let fullText = '';
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items
+            .map((item: any) => ('str' in item ? item.str : ''))
+            .join(' ');
+          fullText += pageText + '\n';
+        }
+
+        return fullText.trim();
+      } catch (e) {
+        console.error('PDF parse error:', e);
+        throw new BadRequestException('Gagal membaca file PDF');
+      }
+    }
+
+    throw new BadRequestException('Format file tidak didukung');
+  }
+
+  async create(
+    dto: CreateSopDto,
+    fileBuffer: Buffer,
+    fileSize: number,
+    uploadedBy: User,
+  ): Promise<{ message: string; id: number }> {
+    const content = await this.extractContent(fileBuffer, dto.format);
+
+    const sop = this.sopRepository.create({
+      title: dto.title,
+      content,
+      format: dto.format,
+      file_size: fileSize,
+      uploaded_by_user: uploadedBy,
+    });
+
+    const saved = await this.sopRepository.save(sop);
+    return { message: 'Dokumen SOP berhasil diupload', id: saved.id };
+  }
+
+  async findAll(): Promise<any[]> {
+  const sops = await this.sopRepository.find({
+    select: ['id', 'title', 'format', 'file_size', 'uploaded_at'],
+    relations: ['uploaded_by_user'],
+  });
+
+  return sops.map((sop) => {
+    const { uploaded_by_user, ...rest } = sop;
+    return Object.assign({}, rest, {
+      uploaded_by: {
+        id: uploaded_by_user.id,
+        name: uploaded_by_user.name,
+      },
+    });
+  });
+}
+
+  async findById(id: number): Promise<any> {
+    const sop = await this.sopRepository.findOne({
+      where: { id },
+      relations: ['uploaded_by_user'],
+    });
+    if (!sop) {
+      throw new NotFoundException(
+        `Dokumen SOP dengan id ${id} tidak ditemukan`,
+      );
+    }
+    const { uploaded_by_user, ...rest } = sop;
+    return {
+      ...rest,
+      uploaded_by: {
+        id: uploaded_by_user.id,
+        name: uploaded_by_user.name,
+      },
+    };
+  }
+
+  async update(
+    id: number,
+    dto: Partial<CreateSopDto>,
+  ): Promise<{ message: string }> {
+    const sop = await this.findById(id);
+    await this.sopRepository.update(sop.id, { title: dto.title });
+    return { message: 'Dokumen SOP berhasil diupdate' };
+  }
+
+  async remove(id: number): Promise<{ message: string }> {
+    const sop = await this.findById(id);
+    await this.sopRepository.delete(sop.id);
+    return { message: 'Dokumen SOP berhasil dihapus' };
+  }
+}
