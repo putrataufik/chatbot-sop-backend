@@ -1,59 +1,138 @@
-import { Controller, Get, Post, Body, Param, Delete, Request, UseGuards, ParseIntPipe } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+// FILE: src/modules/chat/chat.controller.ts
+
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Param,
+  Body,
+  UseGuards,
+  ParseIntPipe,
+  Request,
+  Query,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { ChatService } from './chat.service';
-import { CreateChatSessionDto } from './dto/create-chat-session.dto';
+import { RlmService } from '../rlm/rlm.service';
+import { CreateSessionDto } from './dto/create-session.dto';
 import { SendMessageDto } from './dto/send-message.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
 
 @ApiTags('Chat')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
-@Controller('chat/sessions')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Controller('chat')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly rlmService: RlmService,
+  ) {}
 
-  @Post()
-  @ApiOperation({ summary: 'Membuat sesi chat baru' })
-  async createSession(@Request() req, @Body() createChatSessionDto: CreateChatSessionDto) {
-    const userId = req.user.id;
-    return this.chatService.createSession(userId, createChatSessionDto);
-  }
+  // ── ChatSession ────────────────────────────────────────
 
-  @Get()
-  @ApiOperation({ summary: 'Mendapatkan daftar sesi chat' })
-  async findAllSessions(@Request() req) {
-    const userId = req.user.id;
-    const role = req.user.role;
-    return this.chatService.findAllSessions(userId, role);
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: 'Mendapatkan detail sesi chat beserta pesan di dalamnya' })
-  async findOneSession(@Request() req, @Param('id', ParseIntPipe) id: number) {
-    const userId = req.user.id;
-    const role = req.user.role;
-    return this.chatService.findOneSession(id, userId, role);
-  }
-
-  @Delete(':id')
-  @ApiOperation({ summary: 'Menghapus sesi chat' })
-  async deleteSession(@Request() req, @Param('id', ParseIntPipe) id: number) {
-    const userId = req.user.id;
-    const role = req.user.role;
-    
-    await this.chatService.deleteSession(id, userId, role);
-    return { message: 'Sesi chat berhasil dihapus' };
-  }
-
-  @Post(':id/messages')
-  @ApiOperation({ summary: 'Mengirim pesan ke sesi chat (bertanya ke Chatbot)' })
-  async sendMessage(
-    @Request() req,
-    @Param('id', ParseIntPipe) sessionId: number,
-    @Body() sendMessageDto: SendMessageDto,
+  @Post('sessions')
+  @ApiOperation({ summary: 'Buat session chat baru' })
+  @ApiResponse({ status: 201, description: 'Session berhasil dibuat' })
+  createSession(
+    @Body() dto: CreateSessionDto,
+    @Request() req: any,
   ) {
-    const userId = req.user.id;
-    const role = req.user.role;
-    return this.chatService.sendMessage(sessionId, userId, role, sendMessageDto);
+    return this.chatService.createSession(dto, req.user);
+  }
+
+  @Get('sessions')
+  @ApiOperation({ summary: 'Get semua session chat' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  findAllSessions(@Request() req: any) {
+    return this.chatService.findAllSessions(req.user);
+  }
+
+  @Get('sessions/:id')
+  @ApiOperation({ summary: 'Get session by ID beserta messages' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  findSessionById(
+    @Param('id', ParseIntPipe) id: number,
+    @Request() req: any,
+  ) {
+    return this.chatService.findSessionById(id, req.user);
+  }
+
+  @Delete('sessions/:id')
+  @ApiOperation({ summary: 'Hapus session chat' })
+  @ApiResponse({ status: 200, description: 'Session berhasil dihapus' })
+  @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  removeSession(
+    @Param('id', ParseIntPipe) id: number,
+    @Request() req: any,
+  ) {
+    return this.chatService.removeSession(id, req.user);
+  }
+
+  // ── Message ────────────────────────────────────────────
+
+  @Get('sessions/:id/messages')
+  @ApiOperation({ summary: 'Get semua message dalam session' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  findMessages(
+    @Param('id', ParseIntPipe) id: number,
+    @Request() req: any,
+  ) {
+    return this.chatService.findMessagesBySession(id, req.user);
+  }
+
+  // Send message → proses dengan RLM Engine
+  @Post('sessions/:id/messages')
+  @ApiOperation({ summary: 'Kirim pesan dan dapatkan jawaban dari RLM' })
+  @ApiQuery({
+    name: 'sopId',
+    required: true,
+    type: Number,
+    description: 'ID dokumen SOP yang digunakan sebagai knowledge base',
+  })
+  @ApiResponse({ status: 201, description: 'Pesan berhasil diproses' })
+  @ApiResponse({ status: 404, description: 'Session atau SOP tidak ditemukan' })
+  async sendMessage(
+    @Param('id', ParseIntPipe) sessionId: number,
+    @Query('sopId', ParseIntPipe) sopId: number,
+    @Body() dto: SendMessageDto,
+    @Request() req: any,
+  ) {
+    // Validasi akses session
+    await this.chatService.findSessionById(sessionId, req.user);
+
+    return this.rlmService.sendMessage(sessionId, sopId, dto.content);
+  }
+
+  // Get sub query results per message
+  @Get('messages/:messageId/sub-queries')
+  @ApiOperation({ summary: 'Get detail sub query hasil RLM per message' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  getSubQueryResults(
+    @Param('messageId', ParseIntPipe) messageId: number,
+  ) {
+    return this.rlmService.getSubQueryResults(messageId);
+  }
+
+  // Get token usage log per message
+  @Get('messages/:messageId/token-usage')
+  @ApiOperation({ summary: 'Get token usage log per message' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  getTokenUsage(
+    @Param('messageId', ParseIntPipe) messageId: number,
+  ) {
+    return this.rlmService.getTokenUsageLog(messageId);
   }
 }
