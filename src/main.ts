@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-
+import * as fs from 'fs';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
@@ -35,6 +35,8 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
+
+  fs.writeFileSync('./swagger-spec.json', JSON.stringify(document, null, 2));
 
   // 5. Jalankan server
   const port = process.env.APP_PORT || 3000;

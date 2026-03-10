@@ -1,5 +1,3 @@
-// FILE: src/modules/chat/chat.module.ts
-
 import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChatController } from './chat.controller';
@@ -11,7 +9,7 @@ import { RlmModule } from '../rlm/rlm.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([ChatSession, Message]),
-    forwardRef(() => RlmModule), // ← hindari circular dependency
+    forwardRef(() => RlmModule),         // ← sudah benar
   ],
   controllers: [ChatController],
   providers: [ChatService],

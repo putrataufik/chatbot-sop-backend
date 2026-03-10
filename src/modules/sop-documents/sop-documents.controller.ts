@@ -10,7 +10,7 @@ import {
   Body,
   UseGuards,
   UseInterceptors,
-  UploadedFile,
+  UploadedFiles,
   ParseIntPipe,
   Request,
   BadRequestException,
@@ -23,7 +23,7 @@ import {
   ApiConsumes,
   ApiBody,
 } from '@nestjs/swagger';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { SopDocumentsService } from './sop-documents.service';
 import { CreateSopDto } from './dto/create-sop.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -38,40 +38,97 @@ import { UserRole } from '../users/entities/user.entity';
 export class SopDocumentsController {
   constructor(private readonly sopDocumentsService: SopDocumentsService) {}
 
-  // Upload SOP → hanya ADMIN
-  @Post()
+  // ── Upload BULK (multiple files, title & format otomatis dari nama file)
+  @Post('bulk')
   @Roles(UserRole.ADMIN)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FilesInterceptor('files', 50))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', example: 'SOP Pengajuan Cuti' },
-        format: { type: 'string', enum: ['PDF', 'TXT'] },
-        file: { type: 'string', format: 'binary' },
+        files: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+          description: 'Upload multiple file PDF atau TXT sekaligus',
+        },
       },
     },
   })
-  @ApiOperation({ summary: 'Upload dokumen SOP (Admin only)' })
-  @ApiResponse({ status: 201, description: 'Berhasil diupload' })
-  async create(
-    @Body() dto: CreateSopDto,
-    @UploadedFile() file: Express.Multer.File,
+  @ApiOperation({
+    summary: 'Upload multiple dokumen SOP sekaligus (Admin only)',
+    description:
+      'Title otomatis diambil dari nama file. Format otomatis dideteksi dari ekstensi (.pdf / .txt).',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Hasil upload bulk',
+    schema: {
+      example: {
+        message: '3 dokumen berhasil diupload, 0 gagal',
+        success: [
+          { id: 1, title: 'SOP Rekrutmen', format: 'PDF' },
+          { id: 2, title: 'SOP Cuti Karyawan', format: 'PDF' },
+          { id: 3, title: 'SOP Kenaikan Gaji', format: 'TXT' },
+        ],
+        failed: [],
+      },
+    },
+  })
+  async createBulk(
+    @UploadedFiles() files: Express.Multer.File[],
     @Request() req: any,
   ) {
-    if (!file) {
-      throw new BadRequestException('File tidak boleh kosong');
+    if (!files || files.length === 0) {
+      throw new BadRequestException('Minimal 1 file harus diupload');
     }
-    return this.sopDocumentsService.create(
-      dto,
-      file.buffer,
-      file.size,
-      req.user,
-    );
+    return this.sopDocumentsService.createBulk(files, req.user);
   }
 
-  // GET semua SOP → semua role
+  // ── Upload SINGLE (title & format otomatis dari nama file)
+  @Post()
+  @Roles(UserRole.ADMIN)
+  @UseInterceptors(FilesInterceptor('files', 1))
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'string',
+          format: 'binary',
+          description: 'File PDF atau TXT. Title otomatis dari nama file.',
+        },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: 'Upload 1 dokumen SOP (Admin only)',
+    description:
+      'Title otomatis diambil dari nama file. Format otomatis dideteksi dari ekstensi.',
+  })
+  @ApiResponse({ status: 201, description: 'Berhasil diupload' })
+  async create(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Request() req: any,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('File tidak boleh kosong');
+    }
+    const result = await this.sopDocumentsService.createBulk(
+      [files[0]],
+      req.user,
+    );
+    if (result.failed.length > 0) {
+      throw new BadRequestException(result.failed[0].reason);
+    }
+    return {
+      message: 'Dokumen SOP berhasil diupload',
+      id: result.success[0].id,
+    };
+  }
+
+  // ── GET semua SOP
   @Get()
   @ApiOperation({ summary: 'Get semua dokumen SOP' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
@@ -79,7 +136,7 @@ export class SopDocumentsController {
     return this.sopDocumentsService.findAll();
   }
 
-  // GET SOP by id → semua role
+  // ── GET SOP by id
   @Get(':id')
   @ApiOperation({ summary: 'Get dokumen SOP by ID' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
@@ -88,20 +145,17 @@ export class SopDocumentsController {
     return this.sopDocumentsService.findById(id);
   }
 
-  // PATCH update SOP → hanya ADMIN
+  // ── PATCH update title SOP
   @Patch(':id')
   @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Update judul dokumen SOP (Admin only)' })
-  @ApiResponse({ status: 200, description: 'Berhasil diupdate' })
-  @ApiResponse({ status: 404, description: 'Tidak ditemukan' })
   update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: Partial<CreateSopDto>,
+    @Body('title') title: string, // ← langsung ambil field title
   ) {
-    return this.sopDocumentsService.update(id, dto);
+    return this.sopDocumentsService.update(id, title);
   }
 
-  // DELETE SOP → hanya ADMIN
+  // ── DELETE SOP
   @Delete(':id')
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Hapus dokumen SOP (Admin only)' })

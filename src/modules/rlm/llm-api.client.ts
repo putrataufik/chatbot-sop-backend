@@ -73,13 +73,13 @@ export class LlmApiClient {
     };
   }
 
-  // Root LM → GPT-4o untuk dekomposisi & sintesis
+  // Root LM → GPT-5.2 untuk dekomposisi & sintesis
   async queryRootLM(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] 🧠 ROOT LM called (${this.model})`);
     return this.queryModel(messages, this.model);
   }
 
-  // Sub LM → GPT-4o-mini untuk inferensi konteks kecil
+  // Sub LM → GPT-5-mini untuk inferensi konteks kecil
   async querySubLM(
     systemPrompt: string,
     userPrompt: string,

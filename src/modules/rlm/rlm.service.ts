@@ -33,11 +33,12 @@ export interface SendMessageResult {
     output_tokens: number;
     rlm_depth: number;
   };
-  meta: {                         
+  meta: {
     totalIterations: number;
     subQueryCount: number;
     references: string[];
     execLog: string[];
+    selectedDocumentIds: number[];
   };
 }
 
@@ -58,75 +59,62 @@ export class RlmService {
 
   async sendMessage(
     sessionId: number,
-    sopDocumentId: number,
     userQuestion: string,
   ): Promise<SendMessageResult> {
-    // 1. Ambil dokumen SOP
-    const sopDocument = await this.sopDocumentsService.findById(sopDocumentId);
-    if (!sopDocument) {
-      throw new NotFoundException(
-        `Dokumen SOP dengan id ${sopDocumentId} tidak ditemukan`,
+    const allDocuments = await this.sopDocumentsService.findAllMetadata();
+    console.log(`[RLM SERVICE] 📋 Found ${allDocuments.length} documents`);
+
+    const userMessage = await this.chatService.saveMessage(
+      sessionId, userQuestion, MessageRole.USER, 0, 0,
+    );
+
+    const repl = new ReplEnvironment();
+
+    const rlmResult = await this.rlmEngine.process(
+      userQuestion,
+      repl,
+      allDocuments,
+      async (id: number) => {
+        const doc = await this.sopDocumentsService.findById(id);
+        if (!doc) throw new Error(`Document id=${id} not found`);
+        return doc.content;
+      },
+    );
+
+    const assistantMessage = await this.chatService.saveMessage(
+      sessionId, rlmResult.answer, MessageRole.ASSISTANT,
+      rlmResult.totalInputTokens, rlmResult.totalOutputTokens,
+    );
+
+    for (const subQuery of rlmResult.subQueryResults) {
+      await this.subQueryRepository.save(
+        this.subQueryRepository.create({
+          sub_question: subQuery.subQuestion,
+          answer: subQuery.answer,
+          tokens_used: subQuery.tokensUsed,
+          depth: subQuery.depth,
+          message: assistantMessage,
+        }),
       );
     }
 
-    // 2. Simpan pesan USER ke database
-    const userMessage = await this.chatService.saveMessage(
-      sessionId,
-      userQuestion,
-      MessageRole.USER,
-      0,
-      0,
-    );
-
-    // 3. Setup REPL Environment dengan dokumen SOP
-    const repl = new ReplEnvironment();
-    repl.loadDocument(sopDocument.content);
-
-    // 4. Proses pertanyaan dengan RLM Engine
-    const rlmResult = await this.rlmEngine.process(userQuestion, repl);
-
-    // 5. Simpan pesan ASSISTANT ke database
-    const assistantMessage = await this.chatService.saveMessage(
-      sessionId,
-      rlmResult.answer,
-      MessageRole.ASSISTANT,
-      rlmResult.totalInputTokens,
-      rlmResult.totalOutputTokens,
-    );
-
-    // 6. Simpan SubQueryResult ke database
-    for (const subQuery of rlmResult.subQueryResults) {
-      const subQueryResult = this.subQueryRepository.create({
-        sub_question: subQuery.subQuestion,
-        answer: subQuery.answer,
-        tokens_used: subQuery.tokensUsed,
-        depth: subQuery.depth,
+    await this.tokenLogRepository.save(
+      this.tokenLogRepository.create({
+        method: TokenMethod.RLM,
+        input_tokens: rlmResult.totalInputTokens,
+        output_tokens: rlmResult.totalOutputTokens,
+        rlm_depth: rlmResult.depth,
         message: assistantMessage,
-      });
-      await this.subQueryRepository.save(subQueryResult);
-    }
+      }),
+    );
 
-    // 7. Simpan TokenUsageLog ke database
-    const tokenLog = this.tokenLogRepository.create({
-      method: TokenMethod.RLM,
-      input_tokens: rlmResult.totalInputTokens,
-      output_tokens: rlmResult.totalOutputTokens,
-      rlm_depth: rlmResult.depth,
-      message: assistantMessage,
-    });
-    await this.tokenLogRepository.save(tokenLog);
-
-    // Bagian return di rlm.service.ts — update tokenUsage
     return {
       userMessage: {
-        id: userMessage.id,
-        role: userMessage.role,
-        content: userMessage.content,
-        timestamp: userMessage.timestamp,
+        id: userMessage.id, role: userMessage.role,
+        content: userMessage.content, timestamp: userMessage.timestamp,
       },
       assistantMessage: {
-        id: assistantMessage.id,
-        role: assistantMessage.role,
+        id: assistantMessage.id, role: assistantMessage.role,
         content: assistantMessage.content,
         input_tokens: assistantMessage.input_tokens,
         output_tokens: assistantMessage.output_tokens,
@@ -143,11 +131,11 @@ export class RlmService {
         subQueryCount: rlmResult.subQueryResults.length,
         references: rlmResult.references,
         execLog: rlmResult.execLog,
+        selectedDocumentIds: rlmResult.selectedDocumentIds,
       },
     };
   }
 
-  // Ambil detail sub query result per message
   async getSubQueryResults(messageId: number): Promise<SubQueryResult[]> {
     return this.subQueryRepository.find({
       where: { message: { id: messageId } },
@@ -155,7 +143,6 @@ export class RlmService {
     });
   }
 
-  // Ambil token usage log per message
   async getTokenUsageLog(messageId: number): Promise<TokenUsageLog | null> {
     return this.tokenLogRepository.findOne({
       where: { message: { id: messageId } },
