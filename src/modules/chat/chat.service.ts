@@ -181,4 +181,12 @@ export class ChatService {
       timestamp: msg.timestamp,
     }));
   }
+
+  async getRecentMessages(sessionId: number, limit: number) {
+  return this.messageRepository.find({
+    where: { session: { id: sessionId } },
+    order: { timestamp: 'DESC' },
+    take: limit,
+  }).then(msgs => msgs.reverse()); // balik urutan jadi ASC
+}
 }

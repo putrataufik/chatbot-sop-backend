@@ -20,7 +20,7 @@ export class SopDocument {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ type: 'varchar', length: 200, nullable: false })
+  @Column({ type: 'varchar', length: 200, nullable: false, unique: true })
   title: string;
 
   @Column({ type: 'longtext', nullable: false })

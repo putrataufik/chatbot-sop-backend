@@ -44,6 +44,7 @@ export class RlmEngine {
     repl: ReplEnvironment,
     allDocuments: DocumentMeta[],
     loadDocumentFn: (id: number) => Promise<string>,
+    chatHistory: { role: 'user' | 'assistant'; content: string }[] = [],
   ): Promise<RLMResult> {
     console.log('\n════════════════════════════════════════════════');
     console.log('[RLM] 🚀 START PROCESSING');
@@ -66,6 +67,7 @@ export class RlmEngine {
         role: 'system',
         content: this.buildSystemPrompt(allDocuments),
       },
+      ...chatHistory,
       {
         role: 'user',
         content: userQuestion,

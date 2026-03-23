@@ -64,8 +64,23 @@ export class RlmService {
     const allDocuments = await this.sopDocumentsService.findAllMetadata();
     console.log(`[RLM SERVICE] 📋 Found ${allDocuments.length} documents`);
 
+    // ── Ambil 2 pesan terakhir saja ───────────────────
+    const previousMessages = await this.chatService.getRecentMessages(
+      sessionId,
+      2,
+    );
+    const chatHistory: { role: 'user' | 'assistant'; content: string }[] =
+      previousMessages.map((msg) => ({
+        role: msg.role === MessageRole.USER ? 'user' : 'assistant',
+        content: msg.content,
+      }));
+    // ─────────────────────────────────────────────────
     const userMessage = await this.chatService.saveMessage(
-      sessionId, userQuestion, MessageRole.USER, 0, 0,
+      sessionId,
+      userQuestion,
+      MessageRole.USER,
+      0,
+      0,
     );
 
     const repl = new ReplEnvironment();
@@ -79,11 +94,15 @@ export class RlmService {
         if (!doc) throw new Error(`Document id=${id} not found`);
         return doc.content;
       },
+      chatHistory, // ← pass di sini
     );
 
     const assistantMessage = await this.chatService.saveMessage(
-      sessionId, rlmResult.answer, MessageRole.ASSISTANT,
-      rlmResult.totalInputTokens, rlmResult.totalOutputTokens,
+      sessionId,
+      rlmResult.answer,
+      MessageRole.ASSISTANT,
+      rlmResult.totalInputTokens,
+      rlmResult.totalOutputTokens,
     );
 
     for (const subQuery of rlmResult.subQueryResults) {
@@ -110,11 +129,14 @@ export class RlmService {
 
     return {
       userMessage: {
-        id: userMessage.id, role: userMessage.role,
-        content: userMessage.content, timestamp: userMessage.timestamp,
+        id: userMessage.id,
+        role: userMessage.role,
+        content: userMessage.content,
+        timestamp: userMessage.timestamp,
       },
       assistantMessage: {
-        id: assistantMessage.id, role: assistantMessage.role,
+        id: assistantMessage.id,
+        role: assistantMessage.role,
         content: assistantMessage.content,
         input_tokens: assistantMessage.input_tokens,
         output_tokens: assistantMessage.output_tokens,
@@ -135,7 +157,7 @@ export class RlmService {
       },
     };
   }
-
+  
   async getSubQueryResults(messageId: number): Promise<SubQueryResult[]> {
     return this.subQueryRepository.find({
       where: { message: { id: messageId } },

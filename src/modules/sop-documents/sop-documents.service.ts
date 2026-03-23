@@ -6,7 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Not, Repository } from 'typeorm';
 import { SopDocument, SopFormat } from './entities/sop-document.entity';
 import { CreateSopDto } from './dto/create-sop.dto';
 import { User } from '../users/entities/user.entity';
@@ -113,6 +113,14 @@ export class SopDocumentsService {
       try {
         const format = this.detectFormat(file.originalname);
         const title = this.getTitleFromFilename(file.originalname);
+
+        // --- TAMBAHKAN PENGECEKAN DISINI ---
+        const isExist = await this.sopRepository.findOne({ where: { title } });
+        if (isExist) {
+          throw new Error(`Judul "${title}" sudah terdaftar di sistem.`);
+        }
+        // -----------------------------------
+
         const content = await this.extractContent(file.buffer, format);
 
         const sop = this.sopRepository.create({
@@ -125,12 +133,7 @@ export class SopDocumentsService {
 
         const saved = await this.sopRepository.save(sop);
         success.push({ id: saved.id, title, format });
-
-        console.log(
-          `[SOP] ✅ Uploaded: "${title}" (${format}, ${file.size} bytes)`,
-        );
       } catch (e: any) {
-        console.error(`[SOP] ❌ Failed: "${file.originalname}" → ${e.message}`);
         failed.push({ filename: file.originalname, reason: e.message });
       }
     }
@@ -180,7 +183,20 @@ export class SopDocumentsService {
   }
 
   async update(id: number, title: string): Promise<{ message: string }> {
+    // 1. Cari dokumennya dulu
     const sop = await this.findById(id);
+
+    // 2. Cek apakah title baru sudah dipakai oleh dokumen LAIN
+    const isExist = await this.sopRepository.findOne({
+      where: { title, id: Not(sop.id) }, // Gunakan Not dari 'typeorm'
+    });
+
+    if (isExist) {
+      throw new BadRequestException(
+        `Judul "${title}" sudah digunakan dokumen lain.`,
+      );
+    }
+
     await this.sopRepository.update(sop.id, { title });
     return { message: 'Dokumen SOP berhasil diupdate' };
   }
