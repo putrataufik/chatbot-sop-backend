@@ -8,6 +8,7 @@ import { UsersModule } from './modules/users/users.module';
 import { SopDocumentsModule } from './modules/sop-documents/sop-documents.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { RlmModule } from './modules/rlm/rlm.module';
+import { TokenUsageLog } from './modules/rlm/entities/token-usage-log.entity';
 
 @Module({
   imports: [

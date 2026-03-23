@@ -1,0 +1,784 @@
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/chatbot-sop/auth/register": {
+      "post": {
+        "operationId": "AuthController_register",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Register berhasil"
+          },
+          "409": {
+            "description": "Email sudah terdaftar"
+          }
+        },
+        "summary": "Register user baru",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/api/chatbot-sop/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login berhasil"
+          },
+          "401": {
+            "description": "Email atau password salah"
+          }
+        },
+        "summary": "Login dan dapatkan JWT token",
+        "tags": [
+          "Authentication"
+        ]
+      }
+    },
+    "/api/chatbot-sop/users": {
+      "get": {
+        "operationId": "UsersController_findAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get semua user (Admin only)",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/chatbot-sop/users/me": {
+      "get": {
+        "operationId": "UsersController_getMe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get profil user yang sedang login",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/chatbot-sop/users/{id}": {
+      "get": {
+        "operationId": "UsersController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "404": {
+            "description": "User tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get user by ID (Admin only)",
+        "tags": [
+          "Users"
+        ]
+      },
+      "patch": {
+        "operationId": "UsersController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Berhasil diupdate"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "User tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update user",
+        "tags": [
+          "Users"
+        ]
+      },
+      "delete": {
+        "operationId": "UsersController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil dihapus"
+          },
+          "404": {
+            "description": "User tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Hapus user (Admin only)",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/chatbot-sop/sop-documents/bulk": {
+      "post": {
+        "description": "Title otomatis diambil dari nama file. Format otomatis dideteksi dari ekstensi (.pdf / .txt).",
+        "operationId": "SopDocumentsController_createBulk",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    },
+                    "description": "Upload multiple file PDF atau TXT sekaligus"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Hasil upload bulk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "message": "3 dokumen berhasil diupload, 0 gagal",
+                    "success": [
+                      {
+                        "id": 1,
+                        "title": "SOP Rekrutmen",
+                        "format": "PDF"
+                      },
+                      {
+                        "id": 2,
+                        "title": "SOP Cuti Karyawan",
+                        "format": "PDF"
+                      },
+                      {
+                        "id": 3,
+                        "title": "SOP Kenaikan Gaji",
+                        "format": "TXT"
+                      }
+                    ],
+                    "failed": []
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload multiple dokumen SOP sekaligus (Admin only)",
+        "tags": [
+          "SOP Documents"
+        ]
+      }
+    },
+    "/api/chatbot-sop/sop-documents": {
+      "post": {
+        "description": "Title otomatis diambil dari nama file. Format otomatis dideteksi dari ekstensi.",
+        "operationId": "SopDocumentsController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "files": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "File PDF atau TXT. Title otomatis dari nama file."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Berhasil diupload"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Upload 1 dokumen SOP (Admin only)",
+        "tags": [
+          "SOP Documents"
+        ]
+      },
+      "get": {
+        "operationId": "SopDocumentsController_findAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get semua dokumen SOP",
+        "tags": [
+          "SOP Documents"
+        ]
+      }
+    },
+    "/api/chatbot-sop/sop-documents/{id}": {
+      "get": {
+        "operationId": "SopDocumentsController_findOne",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "404": {
+            "description": "Tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get dokumen SOP by ID",
+        "tags": [
+          "SOP Documents"
+        ]
+      },
+      "patch": {
+        "operationId": "SopDocumentsController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "SOP Documents"
+        ]
+      },
+      "delete": {
+        "operationId": "SopDocumentsController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil dihapus"
+          },
+          "404": {
+            "description": "Tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Hapus dokumen SOP (Admin only)",
+        "tags": [
+          "SOP Documents"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/sessions": {
+      "post": {
+        "operationId": "ChatController_createSession",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Session berhasil dibuat"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Buat session chat baru",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "get": {
+        "operationId": "ChatController_findAllSessions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get semua session chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/sessions/{id}": {
+      "get": {
+        "operationId": "ChatController_findSessionById",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Session tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get session by ID beserta messages",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "delete": {
+        "operationId": "ChatController_removeSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session berhasil dihapus"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Session tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Hapus session chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/sessions/{id}/messages": {
+      "get": {
+        "operationId": "ChatController_findMessages",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Session tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get semua message dalam session",
+        "tags": [
+          "Chat"
+        ]
+      },
+      "post": {
+        "operationId": "ChatController_sendMessage",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pesan berhasil diproses"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Kirim pesan dan dapatkan jawaban dari RLM",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/messages/{messageId}/sub-queries": {
+      "get": {
+        "operationId": "ChatController_getSubQueryResults",
+        "parameters": [
+          {
+            "name": "messageId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get detail sub query hasil RLM per message",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/messages/{messageId}/token-usage": {
+      "get": {
+        "operationId": "ChatController_getTokenUsage",
+        "parameters": [
+          {
+            "name": "messageId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Get token usage log per message",
+        "tags": [
+          "Chat"
+        ]
+      }
+    }
+  },
+  "info": {
+    "title": "Chatbot SOP API",
+    "description": "REST API untuk Chatbot SOP berbasis Recursive Language Model",
+    "version": "1.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "type": "http"
+      }
+    },
+    "schemas": {
+      "RegisterDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Putra Taufik"
+          },
+          "email": {
+            "type": "string",
+            "example": "putra@email.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "password123",
+            "minLength": 6
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "ADMIN"
+            ],
+            "example": "USER"
+          }
+        },
+        "required": [
+          "name",
+          "email",
+          "password",
+          "role"
+        ]
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "putra@email.com"
+          },
+          "password": {
+            "type": "string",
+            "example": "password123"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ]
+      },
+      "UpdateUserDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Putra Taufik"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "ADMIN"
+            ]
+          },
+          "admin_level": {
+            "type": "number",
+            "example": 1
+          },
+          "password": {
+            "type": "string",
+            "example": "newpassword123",
+            "minLength": 6
+          }
+        }
+      },
+      "CreateSessionDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "example": "Konsultasi SOP Pengajuan Cuti"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "SendMessageDto": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "example": "Bagaimana prosedur pengajuan cuti tahunan?"
+          }
+        },
+        "required": [
+          "content"
+        ]
+      }
+    }
+  }
+}

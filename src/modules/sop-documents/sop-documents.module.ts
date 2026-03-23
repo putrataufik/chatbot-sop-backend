@@ -19,4 +19,4 @@ import { SopDocument } from './entities/sop-document.entity';
   providers: [SopDocumentsService],
   exports: [SopDocumentsService, TypeOrmModule],
 })
-export class SopDocumentsModule {}
+export class SopDocumentsModule {}  
