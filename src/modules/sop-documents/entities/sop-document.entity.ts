@@ -1,18 +1,16 @@
 // FILE: src/modules/sop-documents/entities/sop-document.entity.ts
+// ✅ Tambah SopFormat.DOCX
 
 import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  CreateDateColumn,
-  ManyToOne,
-  JoinColumn,
+  Entity, PrimaryGeneratedColumn, Column,
+  CreateDateColumn, ManyToOne, JoinColumn,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
 
 export enum SopFormat {
-  PDF = 'PDF',
-  TXT = 'TXT',
+  PDF  = 'PDF',
+  DOCX = 'DOCX', // ← TAMBAH
+  TXT  = 'TXT',
 }
 
 @Entity('sop_documents')
@@ -26,11 +24,7 @@ export class SopDocument {
   @Column({ type: 'longtext', nullable: false })
   content: string;
 
-  @Column({
-    type: 'enum',
-    enum: SopFormat,
-    nullable: false,
-  })
+  @Column({ type: 'enum', enum: SopFormat, nullable: false })
   format: SopFormat;
 
   @Column({ type: 'bigint', nullable: false, comment: 'in bytes' })
@@ -39,10 +33,9 @@ export class SopDocument {
   @CreateDateColumn({ type: 'datetime' })
   uploaded_at: Date;
 
-  // ── Relasi ──────────────────────────────────────────
   @ManyToOne(() => User, (user) => user.sop_documents, {
     nullable: false,
-    onDelete: 'RESTRICT', // tidak bisa hapus user jika masih punya SOP
+    onDelete: 'RESTRICT',
   })
   @JoinColumn({ name: 'uploaded_by' })
   uploaded_by_user: User;

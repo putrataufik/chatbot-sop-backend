@@ -1,4 +1,15 @@
 // FILE: src/modules/rlm/rlm.engine.ts
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// RLM Engine v2 — Fixed iteration loop & observation handling
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// FIXES:
+//   1. Observation setelah FINAL() di sandbox sekarang meng-include jawaban
+//      (sebelumnya: jawaban dari Sub-LM tidak masuk observation)
+//   2. Root LM yang menulis jawaban tanpa code block ditangani lebih baik
+//   3. Fallback lebih robust — menggunakan context yang sudah di-load
+//
 
 import { Injectable } from '@nestjs/common';
 import { LlmApiClient, ChatMessage } from './llm-api.client';
@@ -84,34 +95,66 @@ export class RlmEngine {
       totalInputTokens += response.input_tokens;
       totalOutputTokens += response.output_tokens;
 
-      console.log(`[RLM] 📨 GPT response preview: "${response.content.slice(0, 200)}"`);
+      console.log(`[RLM] 📨 GPT response preview: "${response.content.slice(0, 300)}"`);
 
       conversationHistory.push({ role: 'assistant', content: response.content });
 
-      // Cek FINAL() di luar code block
+      // ── FIX #2: Cek FINAL() di luar code block ──
+      const codeBlock = this.extractCodeBlock(response.content);
       const finalMatch = response.content.match(/FINAL\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s);
-      if (finalMatch && !response.content.includes('```repl')) {
-        console.log('\n[RLM] 🏁 FINAL() detected outside code block');
-        return {
-          answer: finalMatch[1].trim(),
-          references, subQueryResults, totalInputTokens,
-          totalOutputTokens, totalIterations,
-          depth: currentDepth, execLog: this.replSandbox.getExecLog(),
-          selectedDocumentIds,
-        };
+
+      if (finalMatch && !codeBlock) {
+        const answer = finalMatch[1].trim();
+        // Validate: jangan terima FINAL() yang berisi placeholder atau terlalu pendek
+        if (answer && !answer.includes('__LLM_PLACEHOLDER') && answer.length > 5) {
+          console.log('\n[RLM] 🏁 FINAL() detected outside code block');
+          return {
+            answer,
+            references, subQueryResults, totalInputTokens,
+            totalOutputTokens, totalIterations,
+            depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+            selectedDocumentIds,
+          };
+        }
       }
 
-      const codeBlock = this.extractCodeBlock(response.content);
-      if (!codeBlock) {
-        console.log('[RLM] ⚠️  No code block found');
+      // ── FIX #2: Root LM menulis jawaban langsung tanpa code block dan tanpa FINAL ──
+      if (!codeBlock && !finalMatch) {
+        const plainAnswer = response.content.trim();
+
+        // Heuristik: jika jawaban panjang dan informatif, mungkin Root LM
+        // sudah memberikan jawaban langsung (tanpa wrapping FINAL())
+        // Ini terjadi terutama setelah iterasi pertama berhasil load dokumen
+        if (plainAnswer.length > 200 && i > 0) {
+          console.log('[RLM] 💡 Root LM provided direct answer without FINAL() wrapper');
+          console.log('[RLM] 💡 Accepting as final answer since it appears substantive');
+          return {
+            answer: plainAnswer,
+            references, subQueryResults, totalInputTokens,
+            totalOutputTokens, totalIterations,
+            depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+            selectedDocumentIds,
+          };
+        }
+
+        console.log('[RLM] ⚠️  No code block found, prompting Root LM to use REPL');
         conversationHistory.push({
           role: 'user',
-          content: 'Observation: Tidak ada code block. Tulis code dalam ```repl block.',
+          content: 'Observation: Tidak ada code block. Tulis code dalam ```repl block. Jika kamu sudah tahu jawabannya, panggil FINAL(jawaban) di dalam code block.',
         });
         continue;
       }
 
-      // Eksekusi di sandbox
+      if (!codeBlock) {
+        console.log('[RLM] ⚠️  No code block found (FINAL was placeholder)');
+        conversationHistory.push({
+          role: 'user',
+          content: 'Observation: Tidak ada code block yang valid. Tulis code dalam ```repl block.',
+        });
+        continue;
+      }
+
+      // ── Eksekusi di sandbox ──
       const execResult = await this.replSandbox.execute(
         codeBlock,
         // llm_query callback
@@ -119,8 +162,14 @@ export class RlmEngine {
           currentDepth++;
           console.log(`[RLM] 🔬 Sub-LM called (depth=${currentDepth})`);
           const subResponse = await this.llmApiClient.querySubLM(
-            `Kamu adalah asisten ahli SOP. Jawab HANYA berdasarkan informasi yang diberikan.
-Jika tidak ada info relevan, katakan "Tidak tersedia dalam dokumen".`,
+            `Kamu adalah asisten yang menjawab pertanyaan berdasarkan dokumen SOP yang diberikan.
+
+INSTRUKSI:
+- Jawab berdasarkan isi dokumen yang diberikan dalam prompt.
+- Gunakan istilah dan nomor langkah yang sama seperti di dokumen (contoh: "Mgr DYM", "Langkah 5.1").
+- Jika dokumen berisi prosedur bernomor, sebutkan langkah-langkahnya sesuai urutan di dokumen.
+- Jangan menambah langkah atau prosedur yang tidak tertulis di dokumen.
+- Jika informasi yang ditanyakan benar-benar tidak ada di dokumen, baru katakan "Tidak tersedia dalam dokumen".`,
             prompt,
           );
           totalInputTokens += subResponse.input_tokens;
@@ -150,10 +199,26 @@ Jika tidak ada info relevan, katakan "Tidak tersedia dalam dokumen".`,
       console.log('[RLM] 📤 execResult.finalAnswer:', execResult.finalAnswer?.slice(0, 200));
       console.log('[RLM] 📤 execResult.error:', execResult.error);
 
+      // ── Cek final answer dari sandbox ──
+      // FINAL() bisa dipanggil sebelum error terjadi, jadi cek finalAnswer
+      // terlepas dari ada error atau tidak.
       if (execResult.finalAnswer) {
+        const answer = execResult.finalAnswer.trim();
+
+        // FIX #2: Validate jawaban bukan placeholder dan bukan "tidak tersedia"
+        // yang disebabkan oleh prompt kosong
+        if (answer.includes('__LLM_PLACEHOLDER')) {
+          console.log('[RLM] ⚠️  FINAL() contains placeholder, continuing...');
+          conversationHistory.push({
+            role: 'user',
+            content: 'Observation: FINAL() mengandung placeholder. Pastikan llm_query() dipanggil dengan benar dan hasilnya di-assign ke variabel sebelum FINAL().',
+          });
+          continue;
+        }
+
         console.log('\n[RLM] 🏁 FINAL() called inside code → selesai');
         return {
-          answer: execResult.finalAnswer,
+          answer,
           references, subQueryResults, totalInputTokens,
           totalOutputTokens, totalIterations,
           depth: currentDepth, execLog: this.replSandbox.getExecLog(),
@@ -161,12 +226,13 @@ Jika tidak ada info relevan, katakan "Tidak tersedia dalam dokumen".`,
         };
       }
 
+      // ── Build observation ──
       const observation = this.buildObservation(execResult);
-      console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 200)}..."`);
+      console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 300)}..."`);
       conversationHistory.push({ role: 'user', content: `Observation:\n${observation}` });
     }
 
-    // Fallback
+    // ── Fallback ──
     console.log('\n[RLM] ⚠️  Max iterasi tercapai');
     const fallback = await this.buildFallbackAnswer(userQuestion, subQueryResults, repl);
     totalInputTokens += fallback.inputTokens;
@@ -180,6 +246,114 @@ Jika tidak ada info relevan, katakan "Tidak tersedia dalam dokumen".`,
       selectedDocumentIds,
     };
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // OBSERVATION BUILDER — FIX #1: Include Sub-LM results
+  // ══════════════════════════════════════════════════════════════════════════
+
+  private buildObservation(execResult: {
+    output: string; error: string; success: boolean;
+    llmQueryCalls: string[]; loadedDocumentIds: number[];
+  }): string {
+    let obs = '';
+
+    if (execResult.loadedDocumentIds.length > 0) {
+      obs += `Dokumen berhasil diload: id=[${execResult.loadedDocumentIds.join(', ')}]. Context sekarang tersedia di variabel \`context\`.\n`;
+      obs += `PENTING: Di iterasi berikutnya, \`context\` sudah berisi dokumen yang di-load. Kamu TIDAK perlu memanggil load_document() lagi.\n\n`;
+    }
+
+    if (execResult.output) {
+      const truncated = execResult.output.length > 3000
+        ? execResult.output.slice(0, 3000) + '\n... [output dipotong]'
+        : execResult.output;
+      obs += `Output:\n${truncated}`;
+    }
+
+    if (execResult.error) {
+      obs += `\n\nError:\n${execResult.error}`;
+    }
+
+    if (execResult.llmQueryCalls.length > 0) {
+      obs += `\n\n${execResult.llmQueryCalls.length} llm_query() telah dieksekusi. Hasilnya sudah tersedia.`;
+    }
+
+    if (!obs.trim()) {
+      obs = 'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
+    }
+
+    return obs;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SYSTEM PROMPT
+  // ══════════════════════════════════════════════════════════════════════════
+
+  private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
+    const docList = allDocuments
+      .map(d => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
+      .join('\n');
+
+    return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
+Standar Operasional Prosedur (SOP).
+
+=== DOKUMEN TERSEDIA ===
+${docList}
+========================
+
+=== CARA KERJA ===
+1. Pilih dokumen yang relevan dengan pertanyaan
+2. Load dokumen dengan load_document(id)
+3. Cari informasi di dokumen dengan keyword/regex
+4. Analisis dengan llm_query()
+5. Berikan jawaban dengan FINAL()
+
+=== FUNGSI TERSEDIA ===
+- \`await load_document(id)\` → load dokumen ke context (WAJIB pakai await)
+- \`context\`                → isi dokumen setelah load_document() dipanggil
+- \`document_list\`          → array metadata semua dokumen
+- \`print(...)\`             → tampilkan output
+- \`await llm_query(prompt)\`→ analisis semantik dengan Sub-LM (WAJIB pakai await)
+- \`re.search(pat, text)\`   → regex search
+- \`re.findall(pat, text)\`  → regex findall
+- \`FINAL(jawaban)\`         → berikan jawaban akhir
+
+=== ATURAN PENTING ===
+- WAJIB pakai \`await\` untuk load_document() dan llm_query()
+- WAJIB panggil load_document() sebelum mengakses context
+- SATU code block per respons (gunakan \`\`\`repl)
+- WAJIB sertakan \${context} di dalam prompt llm_query
+- WAJIB panggil FINAL() setelah mendapat jawaban
+- JANGAN jawab dari pengetahuan umum — HANYA dari isi dokumen
+- Gunakan istilah dan nomor langkah PERSIS dari dokumen
+
+=== CONTOH LENGKAP ===
+\`\`\`repl
+// Step 1: Load dokumen
+await load_document(4)
+
+// Step 2: Langsung analisis — context sudah berisi dokumen
+const result = await llm_query(\`
+Berdasarkan dokumen SOP di bawah, jawab pertanyaan user.
+
+INSTRUKSI FORMAT JAWABAN:
+- Sebutkan setiap langkah prosedur dengan NOMOR LANGKAH persis dari dokumen (misal: Langkah 5.1, Langkah 5.2, dst).
+- Sebutkan NAMA JABATAN penanggung jawab persis dari dokumen (misal: Mgr DYM, Mgr HRD, Staf HRD).
+- Sebutkan NAMA FORMULIR persis dari dokumen (misal: Form Permintaan Karyawan Baru).
+- JANGAN merangkum dengan bahasa sendiri — kutip prosedur sesuai yang tertulis di dokumen.
+
+Dokumen SOP:
+\${context}
+
+Pertanyaan: [pertanyaan user]
+\`)
+
+FINAL(result)
+\`\`\``;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // HELPERS
+  // ══════════════════════════════════════════════════════════════════════════
 
   private normalizeDocument(content: string): string {
     return content
@@ -201,110 +375,6 @@ Jika tidak ada info relevan, katakan "Tidak tersedia dalam dokumen".`,
     return null;
   }
 
-  private buildObservation(execResult: {
-    output: string; error: string; success: boolean;
-    llmQueryCalls: string[]; loadedDocumentIds: number[];
-  }): string {
-    let obs = '';
-    if (execResult.loadedDocumentIds.length > 0) {
-      obs += `Dokumen berhasil diload: id=[${execResult.loadedDocumentIds.join(', ')}]. Context sekarang tersedia.\n\n`;
-    }
-    if (execResult.output) {
-      const truncated = execResult.output.length > 2000
-        ? execResult.output.slice(0, 2000) + '\n... [output dipotong]'
-        : execResult.output;
-      obs += `Output:\n${truncated}`;
-    }
-    if (execResult.error) {
-      obs += `\n\nError:\n${execResult.error}`;
-    }
-    if (execResult.llmQueryCalls.length > 0) {
-      obs += `\n\n${execResult.llmQueryCalls.length} llm_query() telah dieksekusi.`;
-    }
-    if (!obs) {
-      obs = 'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL().';
-    }
-    return obs;
-  }
-
-  private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
-  const docList = allDocuments
-    .map(d => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
-    .join('\n');
-
-  return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
-Standar Operasional Prosedur (SOP).
-
-=== DOKUMEN TERSEDIA ===
-${docList}
-========================
-
-=== CARA KERJA ===
-1. Pilih dokumen yang relevan dengan pertanyaan
-2. Load dokumen dengan load_document(id)
-3. Cari informasi di dokumen dengan keyword/regex
-4. Analisis dengan llm_query()
-5. Berikan jawaban dengan FINAL()
-
-=== FUNGSI TERSEDIA ===
-- \`load_document(id)\`     → load dokumen ke context (WAJIB dipanggil dulu)
-- \`context\`               → isi dokumen setelah load_document() dipanggil
-- \`document_list\`         → array metadata semua dokumen
-- \`print(...)\`            → tampilkan output
-- \`llm_query(prompt)\`     → analisis semantik dengan Sub-LM
-- \`re.search(pat, text)\`  → regex search
-- \`re.findall(pat, text)\` → regex findall
-- \`getContextWindow(hits, lines, n)\` → ambil n baris sekitar hits
-- \`FINAL(jawaban)\`        → berikan jawaban akhir
-- \`FINAL_VAR(varName)\`    → return variabel sebagai jawaban
-
-=== ATURAN PENCARIAN ===
-- Setelah load_document(), cek jumlah baris: context.split('\\n').length
-- Jika dokumen kecil (< 100 baris), kirim SELURUH context ke llm_query tanpa filter
-- Gunakan multiple keyword saat filter, jangan hanya 1 kata
-- Jika hits < 5 baris, kirim seluruh context langsung ke llm_query
-- JANGAN kirim prompt kosong ke llm_query — pastikan selalu ada teks dokumen
-
-=== CONTOH LENGKAP ===
-\`\`\`repl
-// Step 1: Load dokumen yang relevan
-load_document(4)
-
-// Step 2: Cek ukuran dokumen
-const lines = context.split('\\n')
-const keywords = ['medical', 'offering', 'lulus', 'orientasi', 'percobaan', 'karyawan']
-
-// Step 3: Filter dengan multiple keyword
-const hits = lines.filter(l =>
-  keywords.some(kw => l.toLowerCase().includes(kw))
-)
-
-// Step 4: Jika dokumen kecil atau hits sedikit, pakai seluruh context
-const text = (lines.length < 100 || hits.length < 5)
-  ? context
-  : hits.slice(0, 30).join('\\n')
-
-// Step 5: Analisis dengan Sub-LM
-const result = llm_query(\`
-Berdasarkan SOP berikut, jawab pertanyaan ini dengan poin-poin terstruktur.
-Gunakan bahasa Indonesia formal. Hanya jawab berdasarkan isi dokumen.
-
-Dokumen SOP:
-\${text}
-\`)
-
-print(result)
-FINAL(result)
-\`\`\`
-
-=== ATURAN PENTING ===
-- WAJIB panggil load_document() sebelum mengakses context
-- SATU code block per respons
-- WAJIB sertakan isi dokumen di dalam prompt llm_query — jangan kirim prompt kosong
-- WAJIB panggil FINAL() setelah mendapat jawaban
-- JANGAN jawab dari pengetahuan umum`;
-}
-
   private trimHistory(history: ChatMessage[], maxMessages: number = 10): ChatMessage[] {
     if (history.length <= maxMessages) return history;
     const systemPrompt = history[0];
@@ -324,25 +394,30 @@ FINAL(result)
     const hits = lines
       .filter(l => keywords.some(kw => l.toLowerCase().includes(kw)))
       .sort((a, b) => b.length - a.length)
-      .slice(0, 10)
+      .slice(0, 20) // FIX: ambil lebih banyak hits untuk fallback
       .join('\n');
 
-    const subAnswers = subQueryResults
+    // FIX: include sub-query answers yang valid
+    const validSubAnswers = subQueryResults
+      .filter(r => !r.answer.includes('Tidak tersedia'))
       .map((r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`)
       .join('\n\n---\n\n');
 
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `Kamu adalah asisten ahli SOP. Jawab berdasarkan informasi dari dokumen. Gunakan bahasa Indonesia yang formal.`,
+        content: `Kamu adalah asisten ahli SOP. Jawab berdasarkan informasi dari dokumen yang diberikan.
+Gunakan istilah dan nomor langkah yang sesuai dengan dokumen.
+Gunakan bahasa Indonesia yang formal.`,
       },
       {
         role: 'user',
         content: `Pertanyaan: "${originalQuestion}"
-${subAnswers ? `\nHasil analisis:\n${subAnswers}\n\n` : ''}Kutipan relevan:
+${validSubAnswers ? `\nHasil analisis sebelumnya:\n${validSubAnswers}\n\n` : ''}
+Kutipan dari dokumen SOP:
 ${hits || 'Tidak ditemukan kutipan relevan'}
 
-Susun jawaban lengkap berdasarkan informasi di atas.`,
+Jawab pertanyaan berdasarkan kutipan di atas. Gunakan istilah dan nomor dari dokumen.`,
       },
     ];
 

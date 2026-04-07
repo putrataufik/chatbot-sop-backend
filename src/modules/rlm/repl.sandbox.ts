@@ -1,4 +1,10 @@
 // FILE: src/modules/rlm/repl.sandbox.ts
+//
+// RLM Sandbox v3 — Single-pass async execution
+//
+// v2 punya 3-pass: collect→resolve→re-execute → context hilang, FINAL capture placeholder
+// v3: wrap kode user dalam async IIFE → load_document() dan llm_query() langsung await
+// Tidak ada placeholder, tidak ada re-execution, tidak ada context yang hilang.
 
 import { Injectable } from '@nestjs/common';
 import * as vm from 'vm';
@@ -20,11 +26,8 @@ export class ReplSandbox {
   private llmQueryCalls: string[] = [];
   private execLog: string[] = [];
   private persistentVars: Record<string, any> = {};
-  private documentMetadata: Array<{
-    id: number;
-    title: string;
-    file_size: number;
-  }> = [];
+  private documentMetadata: Array<{ id: number; title: string; file_size: number }> = [];
+  private loadedDocContents: Map<number, string> = new Map();
 
   initSession(
     documentMetadata: Array<{ id: number; title: string; file_size: number }>,
@@ -35,9 +38,8 @@ export class ReplSandbox {
     this.execLog = [];
     this.persistentVars = {};
     this.documentMetadata = documentMetadata;
-
-    console.log('[SANDBOX] 🟢 Session initialized');
-    console.log(`[SANDBOX] 📋 Available documents: ${documentMetadata.length}`);
+    this.loadedDocContents = new Map();
+    console.log('[SANDBOX] Session initialized');
   }
 
   async execute(
@@ -45,53 +47,75 @@ export class ReplSandbox {
     llmQueryCallback: (prompt: string) => Promise<string>,
     loadDocumentCallback: (id: number) => Promise<string>,
   ): Promise<SandboxExecutionResult> {
-    console.log('\n[SANDBOX] ⚡ Executing code:');
-    console.log('─'.repeat(50));
-    console.log(code.slice(0, 300) + (code.length > 300 ? '...' : ''));
-    console.log('─'.repeat(50));
+    console.log('\n[SANDBOX] Executing code:');
+    console.log(code.slice(0, 500) + (code.length > 500 ? '...' : ''));
 
     this.printBuffer = [];
     this.llmQueryCalls = [];
-    let finalAnswer: string | undefined;
-    let finalVar: string | undefined;
     let executionError = '';
+    const loadedDocIds: number[] = [];
+    const MAX_PROMPT = 100000;
 
-    const MAX_PROMPT_CHARS = 100000;
-
-    // ── Helper: getContextWindow ─────────────────────
-    const getContextWindow = (
-      hits: Array<{ i: number; l: string }>,
-      lines: string[],
-      window: number = 3,
-    ): string[] => {
-      const result: string[] = [];
-      for (const hit of hits) {
-        const start = Math.max(0, hit.i - window);
-        const end = Math.min(lines.length - 1, hit.i + window);
-        for (let j = start; j <= end; j++) result.push(lines[j]);
-      }
-      return [...new Set(result)];
+    // Shared mutable state — semua data yang perlu di-share antara
+    // sandbox code dan caller menggunakan object reference (bukan let variable)
+    // karena vm.createContext bisa punya closure scope yang berbeda.
+    const shared: {
+      context: string;
+      finalAnswer: string | undefined;
+      finalVar: string | undefined;
+    } = {
+      context: this.contextDocument,
+      finalAnswer: undefined,
+      finalVar: undefined,
     };
 
-    // ── Bangun base sandbox vars ─────────────────────
-    // contextValue dipass sebagai parameter agar bisa di-inject di setiap pass
-    const buildBaseSandboxVars = (
-      llmQueryFn: (prompt: string) => string,
-      loadDocumentFn: (id: number) => string,
-      contextValue: string = '', // ← inject context per pass
-    ): Record<string, any> => ({
-      context: contextValue, // ← langsung value, bukan getter
+    const sandboxVars: Record<string, any> = {
+      get context() { return shared.context; },
+      set context(v: string) { shared.context = v; },
 
       document_list: this.documentMetadata,
 
       print: (...args: any[]) => {
-        const output = args
-          .map((a) =>
-            typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a),
-          )
-          .join(' ');
-        this.printBuffer.push(output);
-        console.log(`[SANDBOX] 🖨️  ${output.slice(0, 300)}`);
+        const o = args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ');
+        this.printBuffer.push(o);
+        console.log(`[SANDBOX] print: ${o.slice(0, 300)}`);
+      },
+
+      console: { log: (...args: any[]) => { this.printBuffer.push(args.map(String).join(' ')); } },
+
+      load_document: async (id: number): Promise<string> => {
+        console.log(`[SANDBOX] load_document(${id})`);
+        loadedDocIds.push(id);
+        let content: string;
+        if (this.loadedDocContents.has(id)) {
+          content = this.loadedDocContents.get(id)!;
+        } else {
+          content = await loadDocumentCallback(id);
+          this.loadedDocContents.set(id, content);
+        }
+        shared.context = [...this.loadedDocContents.values()].join('\n\n---\n\n');
+        this.contextDocument = shared.context;
+        console.log(`[SANDBOX] Context updated: ${shared.context.length} chars`);
+        return content;
+      },
+
+      llm_query: async (prompt: string): Promise<string> => {
+        const p = prompt.length > MAX_PROMPT ? prompt.slice(0, MAX_PROMPT) + '\n...[truncated]' : prompt;
+        this.llmQueryCalls.push(p);
+        console.log(`[SANDBOX] llm_query: ${p.length} chars`);
+        const result = await llmQueryCallback(p);
+        console.log(`[SANDBOX] llm_query result: "${result.slice(0, 150)}..."`);
+        return result;
+      },
+
+      FINAL: (answer: any) => {
+        shared.finalAnswer = String(answer);
+        console.log(`[SANDBOX] FINAL: "${String(answer).slice(0, 150)}..."`);
+      },
+
+      FINAL_VAR: (varName: string) => {
+        shared.finalVar = varName;
+        console.log(`[SANDBOX] FINAL_VAR("${varName}")`);
       },
 
       len: (obj: any): number => {
@@ -100,276 +124,83 @@ export class ReplSandbox {
         if (obj && typeof obj === 'object') return Object.keys(obj).length;
         return 0;
       },
-
-      range: (start: number, end?: number, step: number = 1): number[] => {
-        if (end === undefined) {
-          end = start;
-          start = 0;
-        }
-        const result: number[] = [];
-        for (let i = start; i < end; i += step) result.push(i);
-        return result;
+      range: (s: number, e?: number, st: number = 1): number[] => {
+        if (e === undefined) { e = s; s = 0; }
+        const r: number[] = []; for (let i = s; i < e; i += st) r.push(i); return r;
       },
-
-      enumerate: (arr: any[]): [number, any][] =>
-        arr.map((item, idx) => [idx, item]),
-
+      enumerate: (a: any[]): [number, any][] => a.map((item, i) => [i, item]),
       re: {
-        findall: (pattern: string, text: string, flags = 'g'): string[] =>
-          text.match(new RegExp(pattern, flags)) || [],
-        search: (pattern: string, text: string, flags = 'i'): boolean =>
-          new RegExp(pattern, flags).test(text),
-        split: (pattern: string, text: string): string[] =>
-          text.split(new RegExp(pattern)),
+        findall: (p: string, t: string, f = 'g'): string[] => t.match(new RegExp(p, f)) || [],
+        search: (p: string, t: string, f = 'i'): boolean => new RegExp(p, f).test(t),
+        split: (p: string, t: string): string[] => t.split(new RegExp(p)),
         IGNORECASE: 'i',
       },
-
       json: {
-        dumps: (obj: any): string => JSON.stringify(obj, null, 2),
-        loads: (str: string): any => JSON.parse(str),
+        dumps: (o: any): string => JSON.stringify(o, null, 2),
+        loads: (s: string): any => JSON.parse(s),
       },
-
-      getContextWindow,
-      llm_query: llmQueryFn,
-      load_document: loadDocumentFn,
-
-      FINAL: (answer: string) => {
-        finalAnswer = answer;
-        console.log(
-          `[SANDBOX] 🏁 FINAL() called: "${String(answer).slice(0, 150)}..."`,
-        );
-      },
-
-      FINAL_VAR: (varName: string) => {
-        finalVar = varName;
-        console.log(`[SANDBOX] 🏁 FINAL_VAR("${varName}") called`);
-      },
-
-      console: {
-        log: (...args: any[]) => {
-          const output = args.map((a) => String(a)).join(' ');
-          this.printBuffer.push(output);
-          console.log(`[SANDBOX] 🖨️  ${output.slice(0, 300)}`);
-        },
+      getContextWindow: (hits: Array<{i:number;l:string}>, lines: string[], w = 3): string[] => {
+        const r: string[] = [];
+        for (const h of hits) {
+          const s = Math.max(0, h.i - w), e = Math.min(lines.length - 1, h.i + w);
+          for (let j = s; j <= e; j++) r.push(lines[j]);
+        }
+        return [...new Set(r)];
       },
 
       ...this.persistentVars,
-    });
+    };
 
-    // ════════════════════════════════════════════════
-    // PASS 1: Collect load_document calls
-    // (context kosong, llm_query prompt belum valid)
-    // ════════════════════════════════════════════════
-    const collectedDocLoads: number[] = [];
-
-    const pass1Vars = buildBaseSandboxVars(
-      (prompt: string) => {
-        // Di pass 1 kita hanya peduli load_document, llm_query diabaikan
-        return `__LLM_PLACEHOLDER__`;
-      },
-      (id: number) => {
-        console.log(`[SANDBOX] 📂 load_document(${id}) collected`);
-        collectedDocLoads.push(id);
-        return `__DOC_PLACEHOLDER_${id}__`;
-      },
-      '', // context kosong
-    );
+    // ── Single-pass: wrap dalam async IIFE ──
+    // Semua await (load_document, llm_query) langsung di-resolve.
+    // Tidak ada placeholder. Tidak ada re-execution.
+    const wrappedCode = `(async () => {\n${code}\n})()`;
 
     try {
-      const ctx1 = vm.createContext(pass1Vars);
-      vm.runInContext(code, ctx1, { timeout: 10000 });
-    } catch (e: any) {
-      console.log(`[SANDBOX] ℹ️  Pass 1 note: ${e.message?.slice(0, 100)}`);
-    }
+      const ctx = vm.createContext(sandboxVars);
+      const promise = vm.runInContext(wrappedCode, ctx, { timeout: 60000 });
+      await promise;
 
-    // ════════════════════════════════════════════════
-    // Resolve load_document calls → isi _context
-    // ════════════════════════════════════════════════
-    const resolvedDocs: Map<number, string> = new Map();
-    let _context = '';
-
-    if (collectedDocLoads.length > 0) {
-      console.log(
-        `\n[SANDBOX] 📂 Resolving ${collectedDocLoads.length} load_document call(s)...`,
-      );
-      for (const docId of collectedDocLoads) {
-        if (!resolvedDocs.has(docId)) {
-          const content = await loadDocumentCallback(docId);
-          resolvedDocs.set(docId, content);
-          console.log(
-            `[SANDBOX] ✅ Document ${docId} loaded: ${content.length} chars`,
-          );
-        }
-      }
-      const allContents = [...resolvedDocs.values()];
-      _context = allContents.join('\n\n---\n\n');
-      console.log(`[SANDBOX] 📄 Context updated: ${_context.length} chars`);
-    }
-
-    // ════════════════════════════════════════════════
-    // PASS 1b: Re-collect llm_query dengan context sudah terisi
-    // ════════════════════════════════════════════════
-    const collectedQueries: string[] = [];
-
-    console.log('\n[SANDBOX] 🔄 Re-collecting llm_query with loaded context...');
-
-    const pass1bVars = buildBaseSandboxVars(
-      (prompt: string) => {
-        const idx = collectedQueries.length;
-        console.log(
-          `[SANDBOX] 🔬 llm_query[${idx}] re-collected, length: ${prompt.length}`,
-        );
-        console.log(
-          prompt.slice(0, 500) + (prompt.length > 500 ? '\n...[preview]' : ''),
-        );
-        const truncated =
-          prompt.length > MAX_PROMPT_CHARS
-            ? prompt.slice(0, MAX_PROMPT_CHARS) + '\n...[dipotong]'
-            : prompt;
-        collectedQueries.push(truncated);
-        return `__LLM_PLACEHOLDER_${idx}__`;
-      },
-      (id: number) => {
-        // load_document di pass 1b return konten yang sudah resolved
-        return resolvedDocs.get(id) ?? '';
-      },
-      _context, // ← context sudah terisi
-    );
-
-    try {
-      const ctx1b = vm.createContext(pass1bVars);
-      vm.runInContext(code, ctx1b, { timeout: 10000 });
-    } catch (e: any) {
-      console.log(`[SANDBOX] ℹ️  Pass 1b note: ${e.message?.slice(0, 100)}`);
-    }
-
-    // ════════════════════════════════════════════════
-    // Resolve llm_query calls dengan prompt yang benar
-    // ════════════════════════════════════════════════
-    const resolvedResults: Map<number, string> = new Map();
-
-    if (collectedQueries.length > 0) {
-      console.log(
-        `\n[SANDBOX] 🔬 Resolving ${collectedQueries.length} llm_query call(s)...`,
-      );
-      for (let i = 0; i < collectedQueries.length; i++) {
-        const result = await llmQueryCallback(collectedQueries[i]);
-        resolvedResults.set(i, result);
-        console.log(
-          `[SANDBOX] ✅ llm_query[${i}] resolved: "${result.slice(0, 150)}..."`,
-        );
-      }
-    }
-
-    // ════════════════════════════════════════════════
-    // PASS 2: Real run dengan semua hasil resolved
-    // ════════════════════════════════════════════════
-    this.printBuffer = [];
-    finalAnswer = undefined;
-    finalVar = undefined;
-    this.llmQueryCalls = [];
-
-    let callIndex2 = 0;
-    let lastLlmResult = '';
-
-    const pass2Vars = buildBaseSandboxVars(
-      (prompt: string) => {
-        const idx = callIndex2++;
-        this.llmQueryCalls.push(prompt);
-        const result = resolvedResults.get(idx) ?? 'Hasil tidak tersedia';
-        lastLlmResult = result;
-        console.log(
-          `[SANDBOX] 🔬 llm_query[${idx}] → "${result.slice(0, 100)}..."`,
-        );
-        return result;
-      },
-      (id: number) => {
-        const content = resolvedDocs.get(id) ?? '';
-        console.log(
-          `[SANDBOX] 📂 load_document(${id}) → ${content.length} chars`,
-        );
-        return content;
-      },
-      _context, // ← inject context yang sudah terisi
-    );
-
-    Object.defineProperty(pass2Vars, '_', {
-      get: () => lastLlmResult,
-      enumerable: true,
-      configurable: true,
-    });
-
-    try {
-      const ctx2 = vm.createContext(pass2Vars);
-      vm.runInContext(code, ctx2, { timeout: 15000 });
-
-      this.savePersistentVars(ctx2);
-
-      if (finalVar && !finalAnswer) {
-        const varValue = (ctx2 as any)[finalVar];
-        if (varValue !== undefined) {
-          finalAnswer =
-            typeof varValue === 'string'
-              ? varValue
-              : JSON.stringify(varValue, null, 2);
-          console.log(
-            `[SANDBOX] 📦 FINAL_VAR resolved: "${finalAnswer?.slice(0, 150)}..."`,
-          );
+      // Save persistent vars
+      const builtins = new Set([
+        'document_list','print','len','range','enumerate','re','json',
+        'getContextWindow','llm_query','load_document','FINAL','FINAL_VAR','console','context',
+      ]);
+      for (const key of Object.keys(ctx as object)) {
+        if (!builtins.has(key) && !key.startsWith('__')) {
+          this.persistentVars[key] = (ctx as any)[key];
         }
       }
 
-      this.execLog.push(`[SANDBOX] ✅ Code executed successfully`);
+      // Resolve FINAL_VAR
+      if (shared.finalVar && !shared.finalAnswer) {
+        const v = (ctx as any)[shared.finalVar];
+        if (v !== undefined) shared.finalAnswer = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+      }
+
+      this.execLog.push('[SANDBOX] ✅ Code executed successfully');
     } catch (e: any) {
       executionError = e.message ?? 'Unknown error';
-      console.log(`[SANDBOX] ❌ Execution error: ${executionError}`);
+      console.log(`[SANDBOX] ❌ Error: ${executionError}`);
       this.execLog.push(`[SANDBOX] ❌ Error: ${executionError}`);
+
+      // PENTING: meskipun ada error, FINAL() mungkin sudah dipanggil
+      // sebelum error terjadi. Jangan buang finalAnswer.
     }
+
+    console.log(`[SANDBOX] Result: finalAnswer=${shared.finalAnswer?.slice(0, 100)}, error=${executionError}`);
 
     return {
       output: this.printBuffer.join('\n'),
       error: executionError,
       success: !executionError,
-      finalAnswer,
-      finalVar,
+      finalAnswer: shared.finalAnswer,
+      finalVar: shared.finalVar,
       llmQueryCalls: this.llmQueryCalls,
-      loadedDocumentIds: collectedDocLoads,
+      loadedDocumentIds: loadedDocIds,
     };
   }
 
-  private savePersistentVars(ctx: vm.Context): void {
-    const builtins = new Set([
-      'context',
-      'document_list',
-      'print',
-      'len',
-      'range',
-      'enumerate',
-      're',
-      'json',
-      'getContextWindow',
-      'llm_query',
-      'load_document',
-      'FINAL',
-      'FINAL_VAR',
-      'console',
-      '_',
-    ]);
-    for (const key of Object.keys(ctx as object)) {
-      if (!builtins.has(key) && !key.startsWith('__')) {
-        this.persistentVars[key] = (ctx as any)[key];
-      }
-    }
-    const keys = Object.keys(this.persistentVars);
-    if (keys.length > 0) {
-      console.log(`[SANDBOX] 💾 Persistent vars: ${keys.join(', ')}`);
-    }
-  }
-
-  getExecLog(): string[] {
-    return this.execLog;
-  }
-
-  getPrintBuffer(): string[] {
-    return this.printBuffer;
-  }
+  getExecLog(): string[] { return this.execLog; }
+  getPrintBuffer(): string[] { return this.printBuffer; }
 }
