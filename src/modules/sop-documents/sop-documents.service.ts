@@ -13,7 +13,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Not, Repository } from 'typeorm';
 import { SopDocument, SopFormat } from './entities/sop-document.entity';
 import { User } from '../users/entities/user.entity';
-import { DocxExtractorService } from './docx-extractor.service';
+import { PdfExtractorService } from './docx-extractor.service';
 import * as path from 'path';
 
 @Injectable()
@@ -21,8 +21,7 @@ export class SopDocumentsService {
   constructor(
     @InjectRepository(SopDocument)
     private sopRepository: Repository<SopDocument>,
-    private pdfExtractor:  DocxExtractorService,
-    private docxExtractor: DocxExtractorService,
+    private pdfExtractor:  PdfExtractorService,
   ) {}
 
   private detectFormat(filename: string): SopFormat {
@@ -42,7 +41,6 @@ export class SopDocumentsService {
   private async extractContent(buffer: Buffer, format: SopFormat): Promise<string> {
     if (format === SopFormat.TXT)  return buffer.toString('utf-8');
     if (format === SopFormat.PDF)  return this.pdfExtractor.extract(buffer);
-    if (format === SopFormat.DOCX) return this.docxExtractor.extract(buffer);
     throw new BadRequestException('Format tidak didukung');
   }
 

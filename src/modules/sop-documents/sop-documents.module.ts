@@ -6,7 +6,7 @@ import { MulterModule } from '@nestjs/platform-express';
 import { SopDocumentsController } from './sop-documents.controller';
 import { SopDocumentsService }    from './sop-documents.service';
 import { SopDocument }            from './entities/sop-document.entity';
-import { DocxExtractorService }   from './docx-extractor.service'; // ← TAMBAH
+import { PdfExtractorService } from './docx-extractor.service'; // ← TAMBAH
 
 @Module({
   imports: [
@@ -19,8 +19,7 @@ import { DocxExtractorService }   from './docx-extractor.service'; // ← TAMBAH
   controllers: [SopDocumentsController],
   providers: [
     SopDocumentsService,
-    DocxExtractorService,
-    DocxExtractorService, // ← TAMBAH
+    PdfExtractorService, // ← TAMBAH
   ],
   exports: [SopDocumentsService, TypeOrmModule],
 })

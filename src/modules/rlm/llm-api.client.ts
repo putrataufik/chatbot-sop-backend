@@ -29,7 +29,7 @@ export class LlmApiClient {
     this.model = this.configService.get<string>('OPENAI_MODEL') as string;
     this.modelMini = this.configService.get<string>('OPENAI_MODEL_MINI') as string;
     this.maxTokens = parseInt(
-      this.configService.get<string>('OPENAI_MAX_TOKENS') ?? '1000',
+      this.configService.get<string>('OPENAI_MAX_TOKENS') ?? '5000',
     );
     this.temperature = parseFloat(
       this.configService.get<string>('OPENAI_TEMPERATURE') ?? '0.2',

@@ -1,10 +1,5 @@
 // FILE: src/modules/rlm/repl.sandbox.ts
-//
-// RLM Sandbox v3 — Single-pass async execution
-//
-// v2 punya 3-pass: collect→resolve→re-execute → context hilang, FINAL capture placeholder
-// v3: wrap kode user dalam async IIFE → load_document() dan llm_query() langsung await
-// Tidak ada placeholder, tidak ada re-execution, tidak ada context yang hilang.
+// RLM Sandbox v3.1 — Fixed getter/setter via Object.defineProperty
 
 import { Injectable } from '@nestjs/common';
 import * as vm from 'vm';
@@ -56,33 +51,25 @@ export class ReplSandbox {
     const loadedDocIds: number[] = [];
     const MAX_PROMPT = 100000;
 
-    // Shared mutable state — semua data yang perlu di-share antara
-    // sandbox code dan caller menggunakan object reference (bukan let variable)
-    // karena vm.createContext bisa punya closure scope yang berbeda.
-    const shared: {
-      context: string;
-      finalAnswer: string | undefined;
-      finalVar: string | undefined;
-    } = {
+    const shared = {
       context: this.contextDocument,
-      finalAnswer: undefined,
-      finalVar: undefined,
+      finalAnswer: undefined as string | undefined,
+      finalVar: undefined as string | undefined,
     };
 
+    // Build sandbox object — NO getter/setter here (they don't survive vm.createContext)
     const sandboxVars: Record<string, any> = {
-      get context() { return shared.context; },
-      set context(v: string) { shared.context = v; },
-
       document_list: this.documentMetadata,
-
       print: (...args: any[]) => {
         const o = args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ');
         this.printBuffer.push(o);
         console.log(`[SANDBOX] print: ${o.slice(0, 300)}`);
       },
-
-      console: { log: (...args: any[]) => { this.printBuffer.push(args.map(String).join(' ')); } },
-
+      console: {
+        log: (...args: any[]) => {
+          this.printBuffer.push(args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' '));
+        },
+      },
       load_document: async (id: number): Promise<string> => {
         console.log(`[SANDBOX] load_document(${id})`);
         loadedDocIds.push(id);
@@ -98,26 +85,40 @@ export class ReplSandbox {
         console.log(`[SANDBOX] Context updated: ${shared.context.length} chars`);
         return content;
       },
-
       llm_query: async (prompt: string): Promise<string> => {
         const p = prompt.length > MAX_PROMPT ? prompt.slice(0, MAX_PROMPT) + '\n...[truncated]' : prompt;
         this.llmQueryCalls.push(p);
         console.log(`[SANDBOX] llm_query: ${p.length} chars`);
         const result = await llmQueryCallback(p);
-        console.log(`[SANDBOX] llm_query result: "${result.slice(0, 150)}..."`);
+        console.log(`[SANDBOX] llm_query result type: ${typeof result}`);
+        console.log(`[SANDBOX] llm_query result length: ${result?.length}`);
+        console.log(`[SANDBOX] llm_query result preview: "${(result || '').slice(0, 200)}..."`);
         return result;
       },
-
       FINAL: (answer: any) => {
-        shared.finalAnswer = String(answer);
-        console.log(`[SANDBOX] FINAL: "${String(answer).slice(0, 150)}..."`);
-      },
+        // Debug: log exactly what we received
+        console.log(`[SANDBOX] FINAL raw type: ${typeof answer}`);
+        console.log(`[SANDBOX] FINAL is Promise: ${answer instanceof Promise}`);
+        console.log(`[SANDBOX] FINAL raw value preview: ${JSON.stringify(answer)?.slice(0, 200)}`);
 
+        if (answer instanceof Promise) {
+          // Root LM forgot to await — handle gracefully
+          console.log(`[SANDBOX] ⚠️ FINAL received a Promise! Root LM likely forgot 'await'.`);
+          answer.then((resolved: any) => {
+            shared.finalAnswer = String(resolved);
+            console.log(`[SANDBOX] FINAL Promise resolved, length: ${String(resolved).length}`);
+          }).catch(() => {
+            shared.finalAnswer = '';
+          });
+        } else {
+          shared.finalAnswer = String(answer ?? '');
+          console.log(`[SANDBOX] FINAL called, length: ${shared.finalAnswer.length}`);
+        }
+      },
       FINAL_VAR: (varName: string) => {
         shared.finalVar = varName;
         console.log(`[SANDBOX] FINAL_VAR("${varName}")`);
       },
-
       len: (obj: any): number => {
         if (typeof obj === 'string') return obj.length;
         if (Array.isArray(obj)) return obj.length;
@@ -139,7 +140,7 @@ export class ReplSandbox {
         dumps: (o: any): string => JSON.stringify(o, null, 2),
         loads: (s: string): any => JSON.parse(s),
       },
-      getContextWindow: (hits: Array<{i:number;l:string}>, lines: string[], w = 3): string[] => {
+      getContextWindow: (hits: Array<{ i: number; l: string }>, lines: string[], w = 3): string[] => {
         const r: string[] = [];
         for (const h of hits) {
           const s = Math.max(0, h.i - w), e = Math.min(lines.length - 1, h.i + w);
@@ -147,27 +148,39 @@ export class ReplSandbox {
         }
         return [...new Set(r)];
       },
-
-      ...this.persistentVars,
     };
 
-    // ── Single-pass: wrap dalam async IIFE ──
-    // Semua await (load_document, llm_query) langsung di-resolve.
-    // Tidak ada placeholder. Tidak ada re-execution.
+    // Add persistent vars — EXCLUDE all builtin keys to prevent override
+    const builtinKeys = new Set(Object.keys(sandboxVars));
+    builtinKeys.add('context');
+    for (const [key, val] of Object.entries(this.persistentVars)) {
+      if (!builtinKeys.has(key) && !key.startsWith('__')) {
+        sandboxVars[key] = val;
+      }
+    }
+
+    // Create VM context FIRST
+    const ctx = vm.createContext(sandboxVars);
+
+    // THEN define context getter/setter via Object.defineProperty
+    // This is the ONLY way to have working getter/setter in a vm context.
+    Object.defineProperty(ctx, 'context', {
+      get: () => shared.context,
+      set: (v: string) => { shared.context = v; },
+      enumerable: true,
+      configurable: true,
+    });
+
+    // Execute
     const wrappedCode = `(async () => {\n${code}\n})()`;
 
     try {
-      const ctx = vm.createContext(sandboxVars);
       const promise = vm.runInContext(wrappedCode, ctx, { timeout: 60000 });
       await promise;
 
       // Save persistent vars
-      const builtins = new Set([
-        'document_list','print','len','range','enumerate','re','json',
-        'getContextWindow','llm_query','load_document','FINAL','FINAL_VAR','console','context',
-      ]);
       for (const key of Object.keys(ctx as object)) {
-        if (!builtins.has(key) && !key.startsWith('__')) {
+        if (!builtinKeys.has(key) && !key.startsWith('__')) {
           this.persistentVars[key] = (ctx as any)[key];
         }
       }
@@ -175,7 +188,9 @@ export class ReplSandbox {
       // Resolve FINAL_VAR
       if (shared.finalVar && !shared.finalAnswer) {
         const v = (ctx as any)[shared.finalVar];
-        if (v !== undefined) shared.finalAnswer = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+        if (v !== undefined) {
+          shared.finalAnswer = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+        }
       }
 
       this.execLog.push('[SANDBOX] ✅ Code executed successfully');
@@ -183,12 +198,9 @@ export class ReplSandbox {
       executionError = e.message ?? 'Unknown error';
       console.log(`[SANDBOX] ❌ Error: ${executionError}`);
       this.execLog.push(`[SANDBOX] ❌ Error: ${executionError}`);
-
-      // PENTING: meskipun ada error, FINAL() mungkin sudah dipanggil
-      // sebelum error terjadi. Jangan buang finalAnswer.
     }
 
-    console.log(`[SANDBOX] Result: finalAnswer=${shared.finalAnswer?.slice(0, 100)}, error=${executionError}`);
+    console.log(`[SANDBOX] Result: finalAnswer=${shared.finalAnswer ? shared.finalAnswer.length + ' chars' : 'EMPTY'}, error=${executionError || 'none'}`);
 
     return {
       output: this.printBuffer.join('\n'),
