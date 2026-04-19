@@ -30,11 +30,15 @@ export class ChatService {
     user: User,
   ): Promise<{ message: string; id: number }> {
     const session = this.sessionRepository.create({
-      title: dto.title,
+      title: dto.title || 'Sesi Baru',
       user,
     });
     const saved = await this.sessionRepository.save(session);
     return { message: 'Session berhasil dibuat', id: saved.id };
+  }
+
+  async updateSessionTitle(sessionId: number, title: string): Promise<void> {
+    await this.sessionRepository.update(sessionId, { title });
   }
 
   async findAllSessions(user: User): Promise<any[]> {
