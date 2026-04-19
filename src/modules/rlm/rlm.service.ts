@@ -75,6 +75,14 @@ export class RlmService {
         content: msg.content,
       }));
     // ─────────────────────────────────────────────────
+
+    if (previousMessages.length === 0) {
+      await this.chatService.updateSessionTitle(
+        sessionId,
+        this.generateTitle(userQuestion),
+      );
+    }
+
     const userMessage = await this.chatService.saveMessage(
       sessionId,
       userQuestion,
@@ -158,6 +166,14 @@ export class RlmService {
     };
   }
   
+  private generateTitle(question: string): string {
+    const max = 100;
+    if (question.length <= max) return question;
+    const trimmed = question.substring(0, max);
+    const lastSpace = trimmed.lastIndexOf(' ');
+    return lastSpace > 0 ? trimmed.substring(0, lastSpace) + '...' : trimmed + '...';
+  }
+
   async getSubQueryResults(messageId: number): Promise<SubQueryResult[]> {
     return this.subQueryRepository.find({
       where: { message: { id: messageId } },
