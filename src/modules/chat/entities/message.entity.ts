@@ -22,43 +22,38 @@ export enum MessageRole {
 @Entity('messages')
 export class Message {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
-  @Column({
-    type: 'enum',
-    enum: MessageRole,
-    nullable: false,
-  })
-  role: MessageRole;
+  @Column({ type: 'enum', enum: MessageRole, nullable: false })
+  role!: MessageRole;
 
   @Column({ type: 'longtext', nullable: false })
-  content: string;
+  content!: string;
+
+  // Storing tokens directly in message for quick cost analysis
+  @Column({ type: 'int', nullable: false, default: 0 })
+  input_tokens!: number;
 
   @Column({ type: 'int', nullable: false, default: 0 })
-  input_tokens: number;
-
-  @Column({ type: 'int', nullable: false, default: 0 })
-  output_tokens: number;
+  output_tokens!: number;
 
   @CreateDateColumn({ type: 'datetime' })
-  timestamp: Date;
+  timestamp!: Date;
 
-  // ── Relasi ──────────────────────────────────────────
   @ManyToOne(() => ChatSession, (session) => session.messages, {
     nullable: false,
-    onDelete: 'CASCADE', // hapus session → semua message ikut terhapus
+    onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'session_id' })
-  session: ChatSession;
+  session!: ChatSession;
 
   @OneToOne(() => TokenUsageLog, (log) => log.message, {
-    cascade: true, // simpan message → token log otomatis tersimpan
-    eager: false,
+    cascade: true,
   })
-  token_usage_log: TokenUsageLog;
+  token_usage_log!: TokenUsageLog;
 
   @OneToMany(() => SubQueryResult, (subQuery) => subQuery.message, {
-    cascade: true, // simpan message → sub query result otomatis tersimpan
+    cascade: true,
   })
-  sub_query_results: SubQueryResult[];
+  sub_query_results!: SubQueryResult[];
 }

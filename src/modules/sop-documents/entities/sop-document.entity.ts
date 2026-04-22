@@ -16,27 +16,27 @@ export enum SopFormat {
 @Entity('sop_documents')
 export class SopDocument {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ type: 'varchar', length: 200, nullable: false, unique: true })
-  title: string;
+  title!: string;
 
   @Column({ type: 'longtext', nullable: false })
-  content: string;
+  content!: string;
 
   @Column({ type: 'enum', enum: SopFormat, nullable: false })
-  format: SopFormat;
+  format!: SopFormat;
 
   @Column({ type: 'bigint', nullable: false, comment: 'in bytes' })
-  file_size: number;
+  file_size!: number;
 
   @CreateDateColumn({ type: 'datetime' })
-  uploaded_at: Date;
+  uploaded_at!: Date;
 
   @ManyToOne(() => User, (user) => user.sop_documents, {
     nullable: false,
-    onDelete: 'RESTRICT',
+    onDelete: 'RESTRICT', // Prevent deleting admin if they have uploaded SOPs
   })
   @JoinColumn({ name: 'uploaded_by' })
-  uploaded_by_user: User;
+  uploaded_by_user!: User;
 }

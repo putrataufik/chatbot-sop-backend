@@ -88,31 +88,48 @@ export class RlmEngine {
     // ── LOOP UTAMA ─────────────────────────────────────
     for (let i = 0; i < this.maxIterations; i++) {
       totalIterations++;
-      console.log(`\n[RLM] ── ITERASI ${i + 1}/${this.maxIterations} ──────────────────`);
+      console.log(
+        `\n[RLM] ── ITERASI ${i + 1}/${this.maxIterations} ──────────────────`,
+      );
 
       const trimmedHistory = this.trimHistory(conversationHistory);
       const response = await this.llmApiClient.queryRootLM(trimmedHistory);
       totalInputTokens += response.input_tokens;
       totalOutputTokens += response.output_tokens;
 
-      console.log(`[RLM] 📨 GPT response preview: "${response.content.slice(0, 300)}"`);
+      console.log(
+        `[RLM] 📨 GPT response preview: "${response.content.slice(0, 300)}"`,
+      );
 
-      conversationHistory.push({ role: 'assistant', content: response.content });
+      conversationHistory.push({
+        role: 'assistant',
+        content: response.content,
+      });
 
       // ── FIX #2: Cek FINAL() di luar code block ──
       const codeBlock = this.extractCodeBlock(response.content);
-      const finalMatch = response.content.match(/FINAL\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s);
+      const finalMatch = response.content.match(
+        /FINAL\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s,
+      );
 
       if (finalMatch && !codeBlock) {
         const answer = finalMatch[1].trim();
         // Validate: jangan terima FINAL() yang berisi placeholder atau terlalu pendek
-        if (answer && !answer.includes('__LLM_PLACEHOLDER') && answer.length > 5) {
+        if (
+          answer &&
+          !answer.includes('__LLM_PLACEHOLDER') &&
+          answer.length > 5
+        ) {
           console.log('\n[RLM] 🏁 FINAL() detected outside code block');
           return {
             answer,
-            references, subQueryResults, totalInputTokens,
-            totalOutputTokens, totalIterations,
-            depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+            references,
+            subQueryResults,
+            totalInputTokens,
+            totalOutputTokens,
+            totalIterations,
+            depth: currentDepth,
+            execLog: this.replSandbox.getExecLog(),
             selectedDocumentIds,
           };
         }
@@ -126,21 +143,32 @@ export class RlmEngine {
         // sudah memberikan jawaban langsung (tanpa wrapping FINAL())
         // Ini terjadi terutama setelah iterasi pertama berhasil load dokumen
         if (plainAnswer.length > 200 && i > 0) {
-          console.log('[RLM] 💡 Root LM provided direct answer without FINAL() wrapper');
-          console.log('[RLM] 💡 Accepting as final answer since it appears substantive');
+          console.log(
+            '[RLM] 💡 Root LM provided direct answer without FINAL() wrapper',
+          );
+          console.log(
+            '[RLM] 💡 Accepting as final answer since it appears substantive',
+          );
           return {
             answer: plainAnswer,
-            references, subQueryResults, totalInputTokens,
-            totalOutputTokens, totalIterations,
-            depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+            references,
+            subQueryResults,
+            totalInputTokens,
+            totalOutputTokens,
+            totalIterations,
+            depth: currentDepth,
+            execLog: this.replSandbox.getExecLog(),
             selectedDocumentIds,
           };
         }
 
-        console.log('[RLM] ⚠️  No code block found, prompting Root LM to use REPL');
+        console.log(
+          '[RLM] ⚠️  No code block found, prompting Root LM to use REPL',
+        );
         conversationHistory.push({
           role: 'user',
-          content: 'Observation: Tidak ada code block. Tulis code dalam ```repl block. Jika kamu sudah tahu jawabannya, panggil FINAL(jawaban) di dalam code block.',
+          content:
+            'Observation: Tidak ada code block. Tulis code dalam ```repl block. Jika kamu sudah tahu jawabannya, panggil FINAL(jawaban) di dalam code block.',
         });
         continue;
       }
@@ -149,7 +177,8 @@ export class RlmEngine {
         console.log('[RLM] ⚠️  No code block found (FINAL was placeholder)');
         conversationHistory.push({
           role: 'user',
-          content: 'Observation: Tidak ada code block yang valid. Tulis code dalam ```repl block.',
+          content:
+            'Observation: Tidak ada code block yang valid. Tulis code dalam ```repl block.',
         });
         continue;
       }
@@ -162,14 +191,22 @@ export class RlmEngine {
           currentDepth++;
           console.log(`[RLM] 🔬 Sub-LM called (depth=${currentDepth})`);
           const subResponse = await this.llmApiClient.querySubLM(
-            `Kamu adalah asisten yang menjawab pertanyaan berdasarkan dokumen SOP yang diberikan.
+            `Kamu adalah asisten HR yang ramah dan helpful. Jawab pertanyaan user berdasarkan dokumen SOP yang diberikan.
 
-INSTRUKSI:
-- Jawab berdasarkan isi dokumen yang diberikan dalam prompt.
-- Gunakan istilah dan nomor langkah yang sama seperti di dokumen (contoh: "Mgr DYM", "Langkah 5.1").
-- Jika dokumen berisi prosedur bernomor, sebutkan langkah-langkahnya sesuai urutan di dokumen.
+GAYA JAWABAN:
+- Jawab seperti teman kerja yang menjelaskan prosedur — ramah, jelas, dan to the point.
+- Gunakan format Markdown agar mudah dibaca:
+  - **Bold** untuk nama jabatan, nama formulir, dan hal penting
+  - Gunakan numbered list (1. 2. 3.) untuk langkah-langkah prosedur
+  - Gunakan bullet points untuk sub-detail
+- Boleh beri pengantar singkat 1-2 kalimat sebelum masuk ke detail prosedur.
+- Jika ada kondisi if/else, jelaskan dengan natural (misal: "Kalau disetujui, lanjut ke... Tapi kalau tidak, maka...")
+
+AKURASI:
+- Semua informasi HARUS dari dokumen yang diberikan — jangan mengarang.
+- Gunakan istilah dan nomor langkah PERSIS dari dokumen.
 - Jangan menambah langkah atau prosedur yang tidak tertulis di dokumen.
-- Jika informasi yang ditanyakan benar-benar tidak ada di dokumen, baru katakan "Tidak tersedia dalam dokumen".`,
+- Jika informasi yang ditanyakan tidak ada di dokumen, jawab dengan sopan bahwa informasi tersebut tidak tercantum dalam SOP yang tersedia.`,
             prompt,
           );
           totalInputTokens += subResponse.input_tokens;
@@ -191,12 +228,17 @@ INSTRUKSI:
             selectedDocumentIds.push(id);
           }
           repl.loadDocument(normalized);
-          console.log(`[RLM] ✅ Document ${id} loaded & normalized: ${normalized.length} chars`);
+          console.log(
+            `[RLM] ✅ Document ${id} loaded & normalized: ${normalized.length} chars`,
+          );
           return normalized;
         },
       );
 
-      console.log('[RLM] 📤 execResult.finalAnswer:', execResult.finalAnswer?.slice(0, 200));
+      console.log(
+        '[RLM] 📤 execResult.finalAnswer:',
+        execResult.finalAnswer?.slice(0, 200),
+      );
       console.log('[RLM] 📤 execResult.error:', execResult.error);
 
       // ── Cek final answer dari sandbox ──
@@ -211,7 +253,8 @@ INSTRUKSI:
           console.log('[RLM] ⚠️  FINAL() contains placeholder, continuing...');
           conversationHistory.push({
             role: 'user',
-            content: 'Observation: FINAL() mengandung placeholder. Pastikan llm_query() dipanggil dengan benar dan hasilnya di-assign ke variabel sebelum FINAL().',
+            content:
+              'Observation: FINAL() mengandung placeholder. Pastikan llm_query() dipanggil dengan benar dan hasilnya di-assign ke variabel sebelum FINAL().',
           });
           continue;
         }
@@ -219,9 +262,13 @@ INSTRUKSI:
         console.log('\n[RLM] 🏁 FINAL() called inside code → selesai');
         return {
           answer,
-          references, subQueryResults, totalInputTokens,
-          totalOutputTokens, totalIterations,
-          depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+          references,
+          subQueryResults,
+          totalInputTokens,
+          totalOutputTokens,
+          totalIterations,
+          depth: currentDepth,
+          execLog: this.replSandbox.getExecLog(),
           selectedDocumentIds,
         };
       }
@@ -229,20 +276,31 @@ INSTRUKSI:
       // ── Build observation ──
       const observation = this.buildObservation(execResult);
       console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 300)}..."`);
-      conversationHistory.push({ role: 'user', content: `Observation:\n${observation}` });
+      conversationHistory.push({
+        role: 'user',
+        content: `Observation:\n${observation}`,
+      });
     }
 
     // ── Fallback ──
     console.log('\n[RLM] ⚠️  Max iterasi tercapai');
-    const fallback = await this.buildFallbackAnswer(userQuestion, subQueryResults, repl);
+    const fallback = await this.buildFallbackAnswer(
+      userQuestion,
+      subQueryResults,
+      repl,
+    );
     totalInputTokens += fallback.inputTokens;
     totalOutputTokens += fallback.outputTokens;
 
     return {
       answer: fallback.answer,
-      references, subQueryResults, totalInputTokens,
-      totalOutputTokens, totalIterations,
-      depth: currentDepth, execLog: this.replSandbox.getExecLog(),
+      references,
+      subQueryResults,
+      totalInputTokens,
+      totalOutputTokens,
+      totalIterations,
+      depth: currentDepth,
+      execLog: this.replSandbox.getExecLog(),
       selectedDocumentIds,
     };
   }
@@ -252,8 +310,11 @@ INSTRUKSI:
   // ══════════════════════════════════════════════════════════════════════════
 
   private buildObservation(execResult: {
-    output: string; error: string; success: boolean;
-    llmQueryCalls: string[]; loadedDocumentIds: number[];
+    output: string;
+    error: string;
+    success: boolean;
+    llmQueryCalls: string[];
+    loadedDocumentIds: number[];
   }): string {
     let obs = '';
 
@@ -263,9 +324,10 @@ INSTRUKSI:
     }
 
     if (execResult.output) {
-      const truncated = execResult.output.length > 3000
-        ? execResult.output.slice(0, 3000) + '\n... [output dipotong]'
-        : execResult.output;
+      const truncated =
+        execResult.output.length > 3000
+          ? execResult.output.slice(0, 3000) + '\n... [output dipotong]'
+          : execResult.output;
       obs += `Output:\n${truncated}`;
     }
 
@@ -278,7 +340,8 @@ INSTRUKSI:
     }
 
     if (!obs.trim()) {
-      obs = 'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
+      obs =
+        'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
     }
 
     return obs;
@@ -290,7 +353,7 @@ INSTRUKSI:
 
   private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
     const docList = allDocuments
-      .map(d => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
+      .map((d) => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
       .join('\n');
 
     return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
@@ -331,15 +394,17 @@ ${docList}
 // Step 1: Load dokumen
 await load_document(4)
 
-// Step 2: Langsung analisis — context sudah berisi dokumen
+// Step 2: Analisis dengan Sub-LM
 const result = await llm_query(\`
 Berdasarkan dokumen SOP di bawah, jawab pertanyaan user.
 
-INSTRUKSI FORMAT JAWABAN:
-- Sebutkan setiap langkah prosedur dengan NOMOR LANGKAH persis dari dokumen (misal: Langkah 5.1, Langkah 5.2, dst).
-- Sebutkan NAMA JABATAN penanggung jawab persis dari dokumen (misal: Mgr DYM, Mgr HRD, Staf HRD).
-- Sebutkan NAMA FORMULIR persis dari dokumen (misal: Form Permintaan Karyawan Baru).
-- JANGAN merangkum dengan bahasa sendiri — kutip prosedur sesuai yang tertulis di dokumen.
+INSTRUKSI:
+- Jawab dengan gaya conversational yang ramah tapi tetap profesional.
+- Format jawaban dalam Markdown (bold untuk hal penting, numbered list untuk langkah).
+- Gunakan NOMOR LANGKAH persis dari dokumen (Langkah 5.1, 5.2, dst).
+- Gunakan NAMA JABATAN persis dari dokumen (Mgr DYM, Mgr HRD, Staf HRD).
+- Gunakan NAMA FORMULIR persis dari dokumen (Form Permintaan Karyawan Baru).
+- JANGAN mengarang informasi yang tidak ada di dokumen.
 
 Dokumen SOP:
 \${context}
@@ -375,12 +440,17 @@ FINAL(result)
     return null;
   }
 
-  private trimHistory(history: ChatMessage[], maxMessages: number = 10): ChatMessage[] {
+  private trimHistory(
+    history: ChatMessage[],
+    maxMessages: number = 10,
+  ): ChatMessage[] {
     if (history.length <= maxMessages) return history;
     const systemPrompt = history[0];
     const firstUser = history[1];
     const recent = history.slice(-(maxMessages - 2));
-    console.log(`[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`);
+    console.log(
+      `[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`,
+    );
     return [systemPrompt, firstUser, ...recent];
   }
 
@@ -389,26 +459,31 @@ FINAL(result)
     subQueryResults: SubQueryItem[],
     repl: ReplEnvironment,
   ): Promise<{ answer: string; inputTokens: number; outputTokens: number }> {
-    const keywords = originalQuestion.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+    const keywords = originalQuestion
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 3);
     const lines = repl.getDocument().split('\n');
     const hits = lines
-      .filter(l => keywords.some(kw => l.toLowerCase().includes(kw)))
+      .filter((l) => keywords.some((kw) => l.toLowerCase().includes(kw)))
       .sort((a, b) => b.length - a.length)
       .slice(0, 20) // FIX: ambil lebih banyak hits untuk fallback
       .join('\n');
 
     // FIX: include sub-query answers yang valid
     const validSubAnswers = subQueryResults
-      .filter(r => !r.answer.includes('Tidak tersedia'))
-      .map((r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`)
+      .filter((r) => !r.answer.includes('Tidak tersedia'))
+      .map(
+        (r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`,
+      )
       .join('\n\n---\n\n');
 
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `Kamu adalah asisten ahli SOP. Jawab berdasarkan informasi dari dokumen yang diberikan.
-Gunakan istilah dan nomor langkah yang sesuai dengan dokumen.
-Gunakan bahasa Indonesia yang formal.`,
+        content: `Kamu adalah asisten yang ramah. Jawab berdasarkan dokumen SOP yang diberikan.
+Gunakan format Markdown dan gaya conversational yang natural.
+Gunakan istilah dan nomor langkah persis dari dokumen. Jangan mengarang.`,
       },
       {
         role: 'user',
@@ -422,6 +497,10 @@ Jawab pertanyaan berdasarkan kutipan di atas. Gunakan istilah dan nomor dari dok
     ];
 
     const response = await this.llmApiClient.queryRootLM(messages);
-    return { answer: response.content, inputTokens: response.input_tokens, outputTokens: response.output_tokens };
+    return {
+      answer: response.content,
+      inputTokens: response.input_tokens,
+      outputTokens: response.output_tokens,
+    };
   }
 }

@@ -17,34 +17,29 @@ export enum TokenMethod {
 @Entity('token_usage_logs')
 export class TokenUsageLog {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
-  @Column({
-    type: 'enum',
-    enum: TokenMethod,
-    nullable: false,
-  })
-  method: TokenMethod;
+  @Column({ type: 'enum', enum: TokenMethod, nullable: false })
+  method!: TokenMethod;
 
   @Column({ type: 'int', nullable: false, default: 0 })
-  input_tokens: number;
+  input_tokens!: number;
 
   @Column({ type: 'int', nullable: false, default: 0 })
-  output_tokens: number;
+  output_tokens!: number;
 
   @Column({
     type: 'int',
     nullable: false,
     default: 0,
-    comment: 'kedalaman rekursi RLM, 0 jika method = CONV',
+    comment: 'RLM iteration depth. Value 0 indicates baseline conventional model.',
   })
-  rlm_depth: number;
+  rlm_depth!: number;
 
-  // ── Relasi ──────────────────────────────────────────
   @OneToOne(() => Message, (message) => message.token_usage_log, {
     nullable: false,
-    onDelete: 'CASCADE', // hapus message → token log ikut terhapus
+    onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'message_id' })
-  message: Message;
+  message!: Message;
 }

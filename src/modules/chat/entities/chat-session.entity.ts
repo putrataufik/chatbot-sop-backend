@@ -1,5 +1,3 @@
-// FILE: src/modules/chat/entities/chat-session.entity.ts
-
 import {
   Entity,
   PrimaryGeneratedColumn,
@@ -13,28 +11,38 @@ import {
 import { User } from '../../users/entities/user.entity';
 import { Message } from './message.entity';
 
+export enum SessionStatus {
+  ACTIVE = 'ACTIVE',
+  CLOSED = 'CLOSED',
+}
+
 @Entity('chat_sessions')
 export class ChatSession {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ type: 'varchar', length: 200, nullable: false })
-  title: string;
+  title!: string;
+
+  @Column({
+    type: 'varchar',
+    default: SessionStatus.ACTIVE,
+  })
+  status!: SessionStatus;
 
   @CreateDateColumn({ type: 'datetime' })
-  created_at: Date;
+  created_at!: Date;
 
   @UpdateDateColumn({ type: 'datetime' })
-  updated_at: Date;
+  updated_at!: Date;
 
-  // ── Relasi ──────────────────────────────────────────
   @ManyToOne(() => User, (user) => user.chat_sessions, {
     nullable: false,
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user!: User;
 
   @OneToMany(() => Message, (message) => message.session)
-  messages: Message[];
+  messages!: Message[];
 }

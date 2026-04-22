@@ -1,5 +1,3 @@
-// FILE: src/modules/chat/chat.service.ts
-
 import {
   Injectable,
   NotFoundException,
@@ -7,34 +5,73 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { ConfigService } from '@nestjs/config';
+import OpenAI from 'openai';
 import { ChatSession } from './entities/chat-session.entity';
 import { Message, MessageRole } from './entities/message.entity';
 import { CreateSessionDto } from './dto/create-session.dto';
-import { SendMessageDto } from './dto/send-message.dto';
 import { User, UserRole } from '../users/entities/user.entity';
 
 @Injectable()
 export class ChatService {
+  private openai: OpenAI;
+
   constructor(
     @InjectRepository(ChatSession)
     private sessionRepository: Repository<ChatSession>,
 
     @InjectRepository(Message)
     private messageRepository: Repository<Message>,
-  ) {}
+
+    private config: ConfigService,
+  ) {
+    this.openai = new OpenAI({
+      apiKey: this.config.get<string>('OPENAI_API_KEY'),
+    });
+  }
+
+  // ── Session title generation ───────────────────────────
+
+  async generateSessionTitle(firstMessage: string): Promise<string> {
+    try {
+      const response = await this.openai.chat.completions.create({
+        model: this.config.get<string>('OPENAI_MODEL_NANO') || 'gpt-4o-mini',
+        max_tokens: 20,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Buat judul singkat (maks 5 kata, bahasa Indonesia) dari pertanyaan berikut. ' +
+              'Balas hanya judulnya saja, tanpa tanda kutip, tanpa penjelasan.',
+          },
+          { role: 'user', content: firstMessage },
+        ],
+      });
+      return response.choices[0]?.message?.content?.trim() || firstMessage.substring(0, 40);
+    } catch {
+      return firstMessage.substring(0, 40);
+    }
+  }
 
   // ── ChatSession ────────────────────────────────────────
 
   async createSession(
     dto: CreateSessionDto,
     user: User,
-  ): Promise<{ message: string; id: number }> {
+  ): Promise<{ message: string; id: number; title: string; status: string; created_at: Date; updated_at: Date }> {
     const session = this.sessionRepository.create({
-      title: dto.title || 'Sesi Baru',
+      title: dto.title || '...',
       user,
     });
     const saved = await this.sessionRepository.save(session);
-    return { message: 'Session berhasil dibuat', id: saved.id };
+    return {
+      message: 'Session berhasil dibuat',
+      id: saved.id,
+      title: saved.title,
+      status: saved.status,
+      created_at: saved.created_at,
+      updated_at: saved.updated_at,
+    };
   }
 
   async updateSessionTitle(sessionId: number, title: string): Promise<void> {
@@ -42,8 +79,6 @@ export class ChatService {
   }
 
   async findAllSessions(user: User): Promise<any[]> {
-    // ADMIN bisa lihat semua session
-    // USER hanya bisa lihat session miliknya sendiri
     const where =
       user.role === UserRole.ADMIN ? {} : { user: { id: user.id } };
 
@@ -56,6 +91,7 @@ export class ChatService {
     return sessions.map((session) => ({
       id: session.id,
       title: session.title,
+      status: session.status,
       created_at: session.created_at,
       updated_at: session.updated_at,
       user: {
@@ -76,7 +112,6 @@ export class ChatService {
       throw new NotFoundException(`Session dengan id ${id} tidak ditemukan`);
     }
 
-    // USER hanya bisa lihat session miliknya sendiri
     if (user.role !== UserRole.ADMIN && session.user.id !== user.id) {
       throw new ForbiddenException('Anda tidak memiliki akses ke session ini');
     }
@@ -84,6 +119,7 @@ export class ChatService {
     return {
       id: session.id,
       title: session.title,
+      status: session.status,
       created_at: session.created_at,
       updated_at: session.updated_at,
       user: {
@@ -111,7 +147,6 @@ export class ChatService {
       throw new NotFoundException(`Session dengan id ${id} tidak ditemukan`);
     }
 
-    // USER hanya bisa hapus session miliknya sendiri
     if (user.role !== UserRole.ADMIN && session.user.id !== user.id) {
       throw new ForbiddenException('Anda tidak memiliki akses ke session ini');
     }
@@ -131,10 +166,17 @@ export class ChatService {
   ): Promise<Message> {
     const session = await this.sessionRepository.findOne({
       where: { id: sessionId },
+      relations: ['messages'],
     });
 
     if (!session) {
       throw new NotFoundException(`Session dengan id ${sessionId} tidak ditemukan`);
+    }
+
+    // Generate judul otomatis jika ini pesan USER pertama
+    if (role === MessageRole.USER && session.messages.length === 0) {
+      const title = await this.generateSessionTitle(content);
+      await this.sessionRepository.update(sessionId, { title });
     }
 
     const message = this.messageRepository.create({
@@ -145,18 +187,12 @@ export class ChatService {
       session,
     });
 
-    // Update updated_at pada session
-    await this.sessionRepository.update(sessionId, {
-      updated_at: new Date(),
-    });
+    await this.sessionRepository.update(sessionId, { updated_at: new Date() });
 
     return this.messageRepository.save(message);
   }
 
-  async findMessagesBySession(
-    sessionId: number,
-    user: User,
-  ): Promise<any[]> {
+  async findMessagesBySession(sessionId: number, user: User): Promise<any[]> {
     const session = await this.sessionRepository.findOne({
       where: { id: sessionId },
       relations: ['user'],
@@ -166,7 +202,6 @@ export class ChatService {
       throw new NotFoundException(`Session dengan id ${sessionId} tidak ditemukan`);
     }
 
-    // USER hanya bisa lihat message miliknya sendiri
     if (user.role !== UserRole.ADMIN && session.user.id !== user.id) {
       throw new ForbiddenException('Anda tidak memiliki akses ke session ini');
     }
@@ -187,10 +222,10 @@ export class ChatService {
   }
 
   async getRecentMessages(sessionId: number, limit: number) {
-  return this.messageRepository.find({
-    where: { session: { id: sessionId } },
-    order: { timestamp: 'DESC' },
-    take: limit,
-  }).then(msgs => msgs.reverse()); // balik urutan jadi ASC
-}
+    return this.messageRepository.find({
+      where: { session: { id: sessionId } },
+      order: { timestamp: 'DESC' },
+      take: limit,
+    }).then(msgs => msgs.reverse());
+  }
 }

@@ -13,32 +13,31 @@ import { Message } from '../../chat/entities/message.entity';
 @Entity('sub_query_results')
 export class SubQueryResult {
   @PrimaryGeneratedColumn()
-  id: number;
+  id!: number;
 
   @Column({ type: 'text', nullable: false })
-  sub_question: string;
+  sub_question!: string;
 
   @Column({ type: 'longtext', nullable: false })
-  answer: string;
+  answer!: string;
 
   @Column({ type: 'int', nullable: false, default: 0 })
-  tokens_used: number;
+  tokens_used!: number;
 
   @Column({
     type: 'int',
     nullable: false,
-    comment: 'level rekursi ke-n',
+    comment: 'Level rekursi (n) untuk tracking kedalaman iterasi RLM',
   })
-  depth: number;
+  depth!: number;
 
   @CreateDateColumn({ type: 'datetime' })
-  created_at: Date;
+  created_at!: Date;
 
-  // ── Relasi ──────────────────────────────────────────
   @ManyToOne(() => Message, (message) => message.sub_query_results, {
     nullable: false,
-    onDelete: 'CASCADE', // hapus message → semua sub query ikut terhapus
+    onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'message_id' })
-  message: Message;
+  message!: Message;
 }

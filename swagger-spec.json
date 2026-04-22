@@ -417,6 +417,36 @@
         ]
       }
     },
+    "/api/chatbot-sop/sop-documents/all": {
+      "delete": {
+        "operationId": "SopDocumentsController_removeAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Semua dokumen berhasil dihapus",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "example": {
+                    "message": "5 dokumen SOP berhasil dihapus",
+                    "deleted": 5
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Hapus semua dokumen SOP (Admin only)",
+        "tags": [
+          "SOP Documents"
+        ]
+      }
+    },
     "/api/chatbot-sop/chat/sessions": {
       "post": {
         "operationId": "ChatController_createSession",
@@ -762,10 +792,7 @@
             "type": "string",
             "example": "Konsultasi SOP Pengajuan Cuti"
           }
-        },
-        "required": [
-          "title"
-        ]
+        }
       },
       "SendMessageDto": {
         "type": "object",

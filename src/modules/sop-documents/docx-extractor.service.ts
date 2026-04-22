@@ -1,9 +1,11 @@
 // FILE: src/modules/sop-documents/pdf-extractor.service.ts
 //
-// PDF Extractor v7 — Kirim PDF langsung ke LLM
+// PDF Extractor v8 — PDF langsung ke LLM
 //
-// Alur: User upload PDF → encode base64 → kirim ke OpenAI API → structured text → DB
-// Tidak perlu: LibreOffice, Python, pdfplumber, pdftotext, mammoth, OOXML parsing
+// - Prompt general untuk segala bentuk SOP/dokumen prosedur
+// - Full error logging dari OpenAI API
+// - Support: tabel prosedur, flowchart, swim-lane, narrative
+// - Output format cocok untuk RLM (Langkah X. [Actor] Isi)
 
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,11 +20,8 @@ export class PdfExtractorService {
 
   constructor(private configService: ConfigService) {
     this.apiKey = this.configService.get<string>('OPENAI_API_KEY') as string;
-    // Model ringan untuk extraction
     this.model =
-      this.configService.get<string>('OPENAI_MODEL_EXTRACT') ??
-      this.configService.get<string>('OPENAI_MODEL_MINI') ??
-      'gpt-4o-mini';
+      this.configService.get<string>('OPENAI_MODEL') ?? 'gpt-4o-mini';
   }
 
   async extract(pdfBuffer: Buffer): Promise<string> {
@@ -30,43 +29,66 @@ export class PdfExtractorService {
       throw new BadRequestException('File PDF kosong atau terlalu kecil');
     }
 
-    this.logger.log(`[EXTRACT] PDF size: ${pdfBuffer.length} bytes`);
-    this.logger.log(`[EXTRACT] Sending to LLM (${this.model})...`);
+    this.logger.log(
+      `[EXTRACT] PDF size: ${pdfBuffer.length} bytes, model: ${this.model}`,
+    );
 
-    // Encode PDF ke base64
     const base64Pdf = pdfBuffer.toString('base64');
 
-    const systemPrompt = `Kamu adalah parser dokumen SOP (Standard Operating Procedure).
-Tugasmu: baca dokumen PDF yang diberikan dan konversi menjadi teks terstruktur yang rapih.
+    const systemPrompt = `Kamu adalah document parser. Tugasmu mengkonversi dokumen PDF menjadi plain text terstruktur.
 
-ATURAN OUTPUT:
-1. Pertahankan SEMUA informasi — jangan tambah, jangan kurangi.
-2. Header dokumen (no.dokumen, tgl berlaku, status revisi, departemen) tulis apa adanya.
-3. Section TUJUAN, CAKUPAN, DEFINISI, DOKUMEN tulis dengan nomor section.
-4. Bagian PROSEDUR format sebagai:
+ATURAN UMUM:
+- Salin SEMUA informasi dari dokumen. Jangan tambah, jangan kurangi, jangan ubah istilah.
+- Output dalam plain text (bukan markdown, bukan HTML).
+- Gunakan bahasa yang sama dengan dokumen asli.
 
-   Langkah [nomor]. [Actor] Isi kegiatan.
+FORMAT OUTPUT:
 
-   Contoh:
-   Langkah 5.1. [Mgr DYM] Mengisi Form Permintaan Karyawan Baru dan menyerahkannya ke HRD.
-   Langkah 5.2. [Mgr DYM] Jika posisi baru harus disertai job description.
+1. HEADER DOKUMEN
+   Tulis metadata dokumen apa adanya (nomor dokumen, tanggal berlaku, revisi, departemen, judul, dsb).
 
-5. Untuk tabel prosedur multi-kolom:
-   - Kolom "No." = nomor langkah
-   - Kolom "KEGIATAN"/"URAIAN"/"KETERANGAN" = isi kegiatan
-   - Kolom "TANGGUNG JAWAB"/"PELAKSANA" = actor dalam [kurung siku]
-   - Pasangkan SETIAP kegiatan dengan actor yang TEPAT pada baris yang SAMA
-   - Sub-poin (5.1.1, 5.1.2) gabungkan dalam satu langkah induknya
+2. BAGIAN DESKRIPTIF
+   Tulis section seperti Tujuan, Cakupan, Definisi, Dokumen/Formulir, Kebijakan, dsb dengan penomoran asli dari dokumen.
 
-6. Untuk flowchart/swim-lane:
-   - Beri nomor urut (Langkah 1, 2, 3, dst)
-   - Actor dari kolom TANGGUNG JAWAB
-   - Isi dari kolom KETERANGAN/PROSES
-   - Abaikan elemen flowchart (Begin, End, garis, kotak)
+3. BAGIAN PROSEDUR / RINCIAN PROSEDUR
+   Ini bagian terpenting. Format setiap langkah sebagai:
 
-7. JANGAN menambahkan informasi yang tidak ada di dokumen.
-8. JANGAN mengubah istilah, nama jabatan, atau nama formulir.
-9. Output dalam plain text, bukan markdown.`;
+   Langkah [nomor]. [Penanggung Jawab] Isi kegiatan lengkap.
+
+   Aturan khusus:
+   a) NOMOR LANGKAH: gunakan penomoran persis dari dokumen.
+      - Jika dokumen pakai 5.1, 5.2, dst → tulis "Langkah 5.1.", "Langkah 5.2."
+      - Jika dokumen pakai 1, 2, 3 → tulis "Langkah 1.", "Langkah 2."
+      - Jika dokumen tidak punya nomor (misal flowchart) → beri nomor urut sendiri: "Langkah 1.", "Langkah 2.", dst
+
+   b) PENANGGUNG JAWAB / ACTOR: tulis dalam [kurung siku] persis dari dokumen.
+      - Ambil dari kolom "Tanggung Jawab", "Pelaksana", "PIC", atau kolom serupa
+      - Jika ada beberapa actor untuk satu langkah, pisahkan dengan koma: [Manager Langsung, HRD, DirOps]
+      - Jika tidak ada actor yang tercantum untuk suatu langkah, tulis [] (kurung siku kosong)
+      - PENTING: pasangkan setiap kegiatan dengan actor yang benar PADA BARIS YANG SAMA di tabel asli
+
+   c) ISI KEGIATAN: salin lengkap termasuk:
+      - Kondisi if/else (Jika disetujui... Jika tidak...)
+      - Sub-poin (5.1.1, 5.1.2, dst) — gabungkan dalam langkah induknya
+      - Nama formulir, nama jabatan, referensi ke langkah lain (misal "kembali ke point 5.6")
+
+4. JENIS DOKUMEN YANG BISA MUNCUL:
+   a) Tabel prosedur standar: kolom No, Kegiatan, Tanggung Jawab
+   b) Flowchart / swim-lane diagram: ada shape (kotak, diamond), garis, Begin/End
+      → Abaikan elemen visual (garis, kotak, Begin, End, Ya, Tidak sebagai label shape)
+      → Ambil ISI teks dari shape dan actor dari kolom/swimlane
+   c) Dokumen naratif: prosedur ditulis dalam paragraf
+      → Identifikasi langkah-langkah dan actor dari konteks kalimat
+   d) Tabel dengan format custom / tidak standar
+      → Identifikasi kolom mana yang berisi kegiatan dan mana yang berisi penanggung jawab
+      → Jika ragu, tulis semua informasi yang ada
+
+5. JANGAN:
+   - Menambah langkah yang tidak ada di dokumen
+   - Mengubah nama jabatan (misal "Mgr DYM" jangan jadi "Manager DYM")
+   - Mengubah nama formulir (misal "FPKMP" jangan jadi "Form Penilaian Karyawan")
+   - Menambah penjelasan atau interpretasi sendiri
+   - Meringkas atau memparafrase isi langkah`;
 
     try {
       const response = await axios.post(
@@ -87,38 +109,107 @@ ATURAN OUTPUT:
                 },
                 {
                   type: 'text',
-                  text: 'Baca dokumen PDF di atas dan konversi menjadi teks terstruktur sesuai instruksi.',
+                  text: 'Konversi dokumen PDF di atas menjadi plain text terstruktur sesuai instruksi.',
                 },
               ],
             },
           ],
-          max_completion_tokens: 4000,
         },
         {
           headers: {
             Authorization: `Bearer ${this.apiKey}`,
             'Content-Type': 'application/json',
           },
-          timeout: 120000,
+          timeout: 500000,
         },
       );
 
       const result = response.data.choices[0]?.message?.content ?? '';
       const tokens = response.data.usage;
+      const finishReason = response.data.choices[0]?.finish_reason;
 
+      this.logger.log(`[EXTRACT] ✅ Model: ${this.model}`);
       this.logger.log(
-        `[EXTRACT] ✅ Done — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`,
+        `[EXTRACT] ✅ Tokens — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`,
       );
+      this.logger.log(`[EXTRACT] ✅ Finish reason: ${finishReason}`);
+      this.logger.log(`[EXTRACT] ✅ Result length: ${result.length} chars`);
+
+      if (finishReason === 'length') {
+        this.logger.warn(
+          `[EXTRACT] ⚠️ Output terpotong karena max_completion_tokens. Pertimbangkan naikkan limit.`,
+        );
+      }
 
       if (result.trim().length < 30) {
+        this.logger.error(`[EXTRACT] ❌ Result too short: "${result}"`);
         throw new Error('LLM returned empty or too short result');
       }
 
       return result.trim();
     } catch (e: any) {
-      const errMsg = e.response?.data?.error?.message ?? e.message;
-      this.logger.error(`[EXTRACT] ❌ LLM extraction failed: ${errMsg}`);
-      throw new BadRequestException('Gagal membaca PDF: ' + errMsg);
+      // ── Full error logging ──
+      if (e.response) {
+        // OpenAI API returned an error response
+        const status = e.response.status;
+        const errorData = e.response.data?.error;
+        const errorType = errorData?.type ?? 'unknown';
+        const errorCode = errorData?.code ?? 'unknown';
+        const errorMessage = errorData?.message ?? 'No message';
+
+        this.logger.error(`[EXTRACT] ❌ OpenAI API Error:`);
+        this.logger.error(`[EXTRACT]    HTTP Status: ${status}`);
+        this.logger.error(`[EXTRACT]    Error Type: ${errorType}`);
+        this.logger.error(`[EXTRACT]    Error Code: ${errorCode}`);
+        this.logger.error(`[EXTRACT]    Message: ${errorMessage}`);
+
+        if (status === 400) {
+          this.logger.error(
+            `[EXTRACT]    Hint: Cek apakah model "${this.model}" support PDF input, atau file terlalu besar`,
+          );
+        } else if (status === 401) {
+          this.logger.error(
+            `[EXTRACT]    Hint: API key tidak valid atau expired`,
+          );
+        } else if (status === 429) {
+          this.logger.error(
+            `[EXTRACT]    Hint: Rate limit tercapai, coba lagi nanti`,
+          );
+        } else if (status === 413) {
+          this.logger.error(
+            `[EXTRACT]    Hint: File PDF terlalu besar (${pdfBuffer.length} bytes)`,
+          );
+        }
+
+        // Log full response body for debugging
+        this.logger.error(
+          `[EXTRACT]    Full error body: ${JSON.stringify(e.response.data).slice(0, 500)}`,
+        );
+
+        throw new BadRequestException(
+          `Gagal extract PDF (${status}): ${errorMessage}`,
+        );
+      } else if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
+        this.logger.error(`[EXTRACT] ❌ Timeout: request melebihi 120 detik`);
+        this.logger.error(`[EXTRACT]    PDF size: ${pdfBuffer.length} bytes`);
+        throw new BadRequestException(
+          'Gagal extract PDF: timeout (file mungkin terlalu besar)',
+        );
+      } else if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED') {
+        this.logger.error(
+          `[EXTRACT] ❌ Network error: ${e.code} - ${e.message}`,
+        );
+        throw new BadRequestException(
+          'Gagal extract PDF: tidak bisa terhubung ke OpenAI API',
+        );
+      } else {
+        this.logger.error(`[EXTRACT] ❌ Unexpected error: ${e.message}`);
+        this.logger.error(`[EXTRACT]    Stack: ${e.stack?.slice(0, 300)}`);
+        throw new BadRequestException('Gagal extract PDF: ' + e.message);
+      }
     }
   }
 }
+
+// Backward compatibility
+export { PdfExtractorService as DocxExtractorService };
