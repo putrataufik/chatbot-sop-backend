@@ -103,11 +103,20 @@ export class ChatController {
     return this.rlmService.getSubQueryResults(messageId);
   }
 
-  // Get token usage log per message
+  // Get token usage logs per message (RLM & CONV)
   @Get('messages/:messageId/token-usage')
-  @ApiOperation({ summary: 'Get token usage log per message' })
+  @ApiOperation({ summary: 'Get semua token usage log per message (RLM & CONV)' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
   getTokenUsage(@Param('messageId', ParseIntPipe) messageId: number) {
-    return this.rlmService.getTokenUsageLog(messageId);
+    return this.rlmService.getTokenUsageLogs(messageId);
+  }
+
+  // Get perbandingan token RLM vs Konvensional per message
+  @Get('messages/:messageId/token-comparison')
+  @ApiOperation({ summary: 'Perbandingan token RLM vs Konvensional per message' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  @ApiResponse({ status: 404, description: 'Log tidak ditemukan atau bukan SOP_QUERY' })
+  getTokenComparison(@Param('messageId', ParseIntPipe) messageId: number) {
+    return this.rlmService.getTokenComparison(messageId);
   }
 }

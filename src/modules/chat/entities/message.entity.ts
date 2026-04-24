@@ -6,7 +6,6 @@ import {
   Column,
   CreateDateColumn,
   ManyToOne,
-  OneToOne,
   OneToMany,
   JoinColumn,
 } from 'typeorm';
@@ -47,10 +46,10 @@ export class Message {
   @JoinColumn({ name: 'session_id' })
   session!: ChatSession;
 
-  @OneToOne(() => TokenUsageLog, (log) => log.message, {
+  @OneToMany(() => TokenUsageLog, (log) => log.message, {
     cascade: true,
   })
-  token_usage_log!: TokenUsageLog;
+  token_usage_logs!: TokenUsageLog[];
 
   @OneToMany(() => SubQueryResult, (subQuery) => subQuery.message, {
     cascade: true,

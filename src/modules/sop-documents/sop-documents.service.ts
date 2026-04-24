@@ -153,4 +153,13 @@ export class SopDocumentsService {
       .select(['doc.id', 'doc.title', 'doc.file_size'])
       .getMany();
   }
+
+  async findAllWithContent(): Promise<
+    Array<{ id: number; title: string; content: string }>
+  > {
+    return this.sopRepository
+      .createQueryBuilder('doc')
+      .select(['doc.id', 'doc.title', 'doc.content'])
+      .getMany();
+  }
 }

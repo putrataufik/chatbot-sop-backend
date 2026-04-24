@@ -6,11 +6,34 @@ import { TokenUsageLog, TokenMethod } from './entities/token-usage-log.entity';
 import { RlmEngine } from './rlm.engine';
 import { ReplEnvironment } from './repl.environment';
 import { LlmApiClient, ChatMessage } from './llm-api.client';
+import { ConventionalService, ConventionalResult } from './conventional.service';
 import { ChatService } from '../chat/chat.service';
 import { SopDocumentsService } from '../sop-documents/sop-documents.service';
 import { MessageRole } from '../chat/entities/message.entity';
 
 export type IntentType = 'CHITCHAT' | 'CONTEXTUAL' | 'SOP_QUERY';
+
+export interface TokenComparisonResult {
+  message_id: number;
+  rlm: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    rlm_depth: number;
+  };
+  conv: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    answer: string | null;
+    error_message: string | null;
+  };
+  comparison: {
+    token_savings: number;
+    efficiency_ratio: number;
+    percentage_saved: string;
+  };
+}
 
 export interface SendMessageResult {
   userMessage: {
@@ -33,6 +56,12 @@ export interface SendMessageResult {
     output_tokens: number;
     rlm_depth: number;
   };
+  convTokenUsage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    error_message: string | null;
+  } | null;
   meta: {
     totalIterations: number;
     subQueryCount: number;
@@ -54,6 +83,7 @@ export class RlmService {
 
     private rlmEngine: RlmEngine,
     private llmApiClient: LlmApiClient,
+    private conventionalService: ConventionalService,
     private chatService: ChatService,
     private sopDocumentsService: SopDocumentsService,
   ) {}
@@ -114,7 +144,6 @@ Balas HANYA satu kata.`,
 ): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
   console.log('[RLM SERVICE] 💬 Handling as CHITCHAT');
 
-  // Ambil 2 pesan terakhir saja, potong konten panjang
   const recentHistory = chatHistory.slice(-2).map(m => ({
     role: m.role as 'user' | 'assistant',
     content: m.content.slice(0, 100),
@@ -143,7 +172,6 @@ Balas HANYA satu kata.`,
     userQuestion: string,
     chatHistory: { role: 'user' | 'assistant'; content: string }[],
   ): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
-    // Potong konten assistant yang panjang agar tidak membengkak
     const trimmedHistory = chatHistory.slice(-6).map((m) => ({
       role: m.role as 'user' | 'assistant',
       content:
@@ -173,7 +201,6 @@ Balas HANYA satu kata.`,
     sessionId: number,
     userQuestion: string,
   ): Promise<SendMessageResult> {
-    // Ambil history percakapan terakhir
     const previousMessages = await this.chatService.getRecentMessages(
       sessionId,
       6,
@@ -189,7 +216,6 @@ Balas HANYA satu kata.`,
     );
     console.log(`[RLM SERVICE] 📜 History: ${chatHistory.length} messages`);
 
-    // Generate judul sesi dari pesan pertama
     if (previousMessages.length === 0) {
       await this.chatService.updateSessionTitle(
         sessionId,
@@ -197,7 +223,6 @@ Balas HANYA satu kata.`,
       );
     }
 
-    // Simpan pesan user
     const userMessage = await this.chatService.saveMessage(
       sessionId,
       userQuestion,
@@ -206,7 +231,6 @@ Balas HANYA satu kata.`,
       0,
     );
 
-    // Klasifikasi intent
     const intent = await this.classifyIntent(userQuestion, chatHistory);
     console.log(`[RLM SERVICE] 🎯 Intent: ${intent}`);
 
@@ -219,8 +243,8 @@ Balas HANYA satu kata.`,
     let references: string[] = [];
     let execLog: string[] = [];
     let selectedDocumentIds: number[] = [];
+    let convResult: ConventionalResult | null = null;
 
-    // ── Routing berdasarkan intent ──
     if (intent === 'CHITCHAT') {
       const result = await this.answerChitchat(userQuestion, chatHistory);
       answerContent = result.content;
@@ -232,7 +256,7 @@ Balas HANYA satu kata.`,
       totalInputTokens = result.input_tokens;
       totalOutputTokens = result.output_tokens;
     } else {
-      // SOP_QUERY → full RLM pipeline
+      // SOP_QUERY → run RLM & CONV in parallel
       const allDocuments = await this.sopDocumentsService.findAllMetadata();
       console.log(`[RLM SERVICE] 📋 Found ${allDocuments.length} documents`);
 
@@ -246,17 +270,22 @@ Balas HANYA satu kata.`,
       }));
 
       const repl = new ReplEnvironment();
-      const rlmResult = await this.rlmEngine.process(
-        userQuestion,
-        repl,
-        allDocuments,
-        async (id: number) => {
-          const doc = await this.sopDocumentsService.findById(id);
-          if (!doc) throw new Error(`Document id=${id} not found`);
-          return doc.content;
-        },
-        trimmedHistory, // <- pakai trimmedHistory bukan chatHistory
-      );
+
+      console.log('[RLM SERVICE] ⚡ Running RLM & CONV in parallel...');
+      const [rlmResult, convResultParallel] = await Promise.all([
+        this.rlmEngine.process(
+          userQuestion,
+          repl,
+          allDocuments,
+          async (id: number) => {
+            const doc = await this.sopDocumentsService.findById(id);
+            if (!doc) throw new Error(`Document id=${id} not found`);
+            return doc.content;
+          },
+          trimmedHistory,
+        ),
+        this.conventionalService.process(userQuestion, trimmedHistory),
+      ]);
 
       answerContent = rlmResult.answer;
       totalInputTokens = rlmResult.totalInputTokens;
@@ -267,6 +296,7 @@ Balas HANYA satu kata.`,
       references = rlmResult.references;
       execLog = rlmResult.execLog;
       selectedDocumentIds = rlmResult.selectedDocumentIds;
+      convResult = convResultParallel;
     }
 
     // Simpan pesan asisten
@@ -293,17 +323,33 @@ Balas HANYA satu kata.`,
       }
     }
 
-    // Simpan token usage log
-    const method = intent === 'SOP_QUERY' ? TokenMethod.RLM : TokenMethod.CONV;
+    // Simpan RLM token log
     await this.tokenLogRepository.save(
       this.tokenLogRepository.create({
-        method,
+        method: TokenMethod.RLM,
         input_tokens: totalInputTokens,
         output_tokens: totalOutputTokens,
         rlm_depth: rlmDepth,
+        conv_answer: null,
+        error_message: null,
         message: assistantMessage,
       }),
     );
+
+    // Simpan CONV token log (hanya untuk SOP_QUERY)
+    if (intent === 'SOP_QUERY' && convResult !== null) {
+      await this.tokenLogRepository.save(
+        this.tokenLogRepository.create({
+          method: TokenMethod.CONV,
+          input_tokens: convResult.input_tokens,
+          output_tokens: convResult.output_tokens,
+          rlm_depth: 0,
+          conv_answer: convResult.content || null,
+          error_message: convResult.error_message,
+          message: assistantMessage,
+        }),
+      );
+    }
 
     return {
       userMessage: {
@@ -321,11 +367,20 @@ Balas HANYA satu kata.`,
         timestamp: assistantMessage.timestamp,
       },
       tokenUsage: {
-        method,
+        method: TokenMethod.RLM,
         input_tokens: totalInputTokens,
         output_tokens: totalOutputTokens,
         rlm_depth: rlmDepth,
       },
+      convTokenUsage:
+        convResult !== null
+          ? {
+              input_tokens: convResult.input_tokens,
+              output_tokens: convResult.output_tokens,
+              total_tokens: convResult.input_tokens + convResult.output_tokens,
+              error_message: convResult.error_message,
+            }
+          : null,
       meta: {
         totalIterations,
         subQueryCount: subQueryResults.length,
@@ -358,9 +413,58 @@ Balas HANYA satu kata.`,
     });
   }
 
-  async getTokenUsageLog(messageId: number): Promise<TokenUsageLog | null> {
-    return this.tokenLogRepository.findOne({
+  async getTokenUsageLogs(messageId: number): Promise<TokenUsageLog[]> {
+    return this.tokenLogRepository.find({
       where: { message: { id: messageId } },
     });
+  }
+
+  async getTokenComparison(messageId: number): Promise<TokenComparisonResult> {
+    const logs = await this.tokenLogRepository.find({
+      where: { message: { id: messageId } },
+    });
+
+    const rlmLog = logs.find((l) => l.method === TokenMethod.RLM);
+    const convLog = logs.find((l) => l.method === TokenMethod.CONV);
+
+    if (!rlmLog) {
+      throw new NotFoundException(
+        `Token log RLM tidak ditemukan untuk message id=${messageId}`,
+      );
+    }
+    if (!convLog) {
+      throw new NotFoundException(
+        `Token log CONV tidak ditemukan untuk message id=${messageId}. Pastikan pesan ini adalah SOP_QUERY.`,
+      );
+    }
+
+    const rlmTotal = rlmLog.input_tokens + rlmLog.output_tokens;
+    const convTotal = convLog.input_tokens + convLog.output_tokens;
+    const savings = convTotal - rlmTotal;
+    const ratio = rlmTotal > 0 ? convTotal / rlmTotal : 0;
+    const percentSaved =
+      convTotal > 0 ? ((savings / convTotal) * 100).toFixed(1) + '%' : '0%';
+
+    return {
+      message_id: messageId,
+      rlm: {
+        input_tokens: rlmLog.input_tokens,
+        output_tokens: rlmLog.output_tokens,
+        total_tokens: rlmTotal,
+        rlm_depth: rlmLog.rlm_depth,
+      },
+      conv: {
+        input_tokens: convLog.input_tokens,
+        output_tokens: convLog.output_tokens,
+        total_tokens: convTotal,
+        answer: convLog.conv_answer,
+        error_message: convLog.error_message,
+      },
+      comparison: {
+        token_savings: savings,
+        efficiency_ratio: Math.round(ratio * 100) / 100,
+        percentage_saved: percentSaved,
+      },
+    };
   }
 }

@@ -4,7 +4,7 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
-  OneToOne,
+  ManyToOne,
   JoinColumn,
 } from 'typeorm';
 import { Message } from '../../chat/entities/message.entity';
@@ -36,7 +36,13 @@ export class TokenUsageLog {
   })
   rlm_depth!: number;
 
-  @OneToOne(() => Message, (message) => message.token_usage_log, {
+  @Column({ type: 'longtext', nullable: true, default: null })
+  conv_answer!: string | null;
+
+  @Column({ type: 'text', nullable: true, default: null })
+  error_message!: string | null;
+
+  @ManyToOne(() => Message, (message) => message.token_usage_logs, {
     nullable: false,
     onDelete: 'CASCADE',
   })

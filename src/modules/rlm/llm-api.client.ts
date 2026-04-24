@@ -87,6 +87,12 @@ export class LlmApiClient {
     return this.queryModel(messages, this.model, this.maxTokensRoot);
   }
 
+  // Conv LM → untuk baseline konvensional (same model & max tokens as Root LM)
+  async queryConvLM(messages: ChatMessage[]): Promise<LLMResponse> {
+    console.log(`\n[LLM] 🏛️ CONV LM called (${this.model})`);
+    return this.queryModel(messages, this.model, this.maxTokensRoot);
+  }
+
   // Sub LM → untuk inferensi konteks dokumen
   async querySubLM(
     systemPrompt: string,
