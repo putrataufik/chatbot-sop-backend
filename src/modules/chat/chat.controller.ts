@@ -10,14 +10,12 @@ import {
   UseGuards,
   ParseIntPipe,
   Request,
-  Query,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
-  ApiQuery,
 } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
 import { RlmService } from '../rlm/rlm.service';
@@ -92,10 +90,10 @@ export class ChatController {
   ) {
     await this.chatService.findSessionById(sessionId, req.user);
     return this.rlmService.sendMessage(sessionId, dto.content);
-    // ← hapus sopId
   }
 
-  // Get sub query results per message
+  // ── Token Comparison per Message ───────────────────────
+
   @Get('messages/:messageId/sub-queries')
   @ApiOperation({ summary: 'Get detail sub query hasil RLM per message' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
@@ -103,11 +101,41 @@ export class ChatController {
     return this.rlmService.getSubQueryResults(messageId);
   }
 
-  // Get token usage log per message
   @Get('messages/:messageId/token-usage')
-  @ApiOperation({ summary: 'Get token usage log per message' })
+  @ApiOperation({ summary: 'Get semua token usage log per message (RLM & CONV)' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
   getTokenUsage(@Param('messageId', ParseIntPipe) messageId: number) {
-    return this.rlmService.getTokenUsageLog(messageId);
+    return this.rlmService.getTokenUsageLogs(messageId);
   }
+
+  @Get('messages/:messageId/token-comparison')
+  @ApiOperation({ summary: 'Perbandingan token RLM vs Konvensional per message' })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  @ApiResponse({ status: 404, description: 'Log tidak ditemukan atau bukan SOP_QUERY' })
+  getTokenComparison(@Param('messageId', ParseIntPipe) messageId: number) {
+    return this.rlmService.getTokenComparison(messageId);
+  }
+
+  // ── Token Comparison agregat per Session ──────────────
+
+  @Get('sessions/:sessionId/token-comparison')
+  @ApiOperation({
+    summary: 'Perbandingan token RLM vs CONV agregat per session',
+    description:
+      'Mengembalikan semua baris perbandingan token (hanya SOP_QUERY) ' +
+      'beserta isi chat (user_content & assistant_content) dan summary agregat. ' +
+      'Kolom: Input Token RLM/CONV, Output Token RLM/CONV, ' +
+      'Input Efficiency, Output Efficiency, Total Token RLM/CONV, Efficiency Ratio CONV/RLM.',
+  })
+  @ApiResponse({ status: 200, description: 'Berhasil' })
+  @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  getSessionTokenComparison(
+    @Param('sessionId', ParseIntPipe) sessionId: number,
+    @Request() req: any,
+  ) {
+    return this.chatService.getSessionTokenComparison(sessionId, req.user);
+  }
+
+  
 }
