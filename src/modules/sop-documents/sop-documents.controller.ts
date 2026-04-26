@@ -155,6 +155,24 @@ export class SopDocumentsController {
     return this.sopDocumentsService.update(id, title);
   }
 
+  // ── DELETE ALL SOP
+  @Delete('all')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Hapus semua dokumen SOP (Admin only)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Semua dokumen berhasil dihapus',
+    schema: {
+      example: {
+        message: '5 dokumen SOP berhasil dihapus',
+        deleted: 5,
+      },
+    },
+  })
+  removeAll() {
+    return this.sopDocumentsService.removeAll();
+  }
+
   // ── DELETE SOP
   @Delete(':id')
   @Roles(UserRole.ADMIN)

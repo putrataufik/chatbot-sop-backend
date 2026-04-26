@@ -4,6 +4,7 @@ import { RlmEngine } from './rlm.engine';
 import { ReplSandbox } from './repl.sandbox';
 import { LlmApiClient } from './llm-api.client';
 import { RlmService } from './rlm.service';
+import { ConventionalService } from './conventional.service';
 import { TokenUsageLog } from './entities/token-usage-log.entity';
 import { SubQueryResult } from './entities/sub-query-result.entity';
 import { ChatModule } from '../chat/chat.module';
@@ -13,9 +14,9 @@ import { SopDocumentsModule } from '../sop-documents/sop-documents.module';
   imports: [
     TypeOrmModule.forFeature([TokenUsageLog, SubQueryResult]),
     forwardRef(() => ChatModule),
-    SopDocumentsModule,                 
+    SopDocumentsModule,
   ],
-  providers: [RlmEngine, ReplSandbox, LlmApiClient, RlmService],
+  providers: [RlmEngine, ReplSandbox, LlmApiClient, RlmService, ConventionalService],
   exports: [RlmEngine, RlmService],
 })
 export class RlmModule {}
