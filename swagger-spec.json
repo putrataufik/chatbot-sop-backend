@@ -687,7 +687,75 @@
             "bearer": []
           }
         ],
-        "summary": "Get token usage log per message",
+        "summary": "Get semua token usage log per message (RLM & CONV)",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/messages/{messageId}/token-comparison": {
+      "get": {
+        "operationId": "ChatController_getTokenComparison",
+        "parameters": [
+          {
+            "name": "messageId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "404": {
+            "description": "Log tidak ditemukan atau bukan SOP_QUERY"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Perbandingan token RLM vs Konvensional per message",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
+    "/api/chatbot-sop/chat/sessions/{sessionId}/token-comparison": {
+      "get": {
+        "description": "Mengembalikan semua baris perbandingan token (hanya SOP_QUERY) beserta isi chat (user_content & assistant_content) dan summary agregat. Kolom: Input Token RLM/CONV, Output Token RLM/CONV, Input Efficiency, Output Efficiency, Total Token RLM/CONV, Efficiency Ratio CONV/RLM.",
+        "operationId": "ChatController_getSessionTokenComparison",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Berhasil"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Session tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Perbandingan token RLM vs CONV agregat per session",
         "tags": [
           "Chat"
         ]

@@ -1,15 +1,4 @@
 // FILE: src/modules/rlm/rlm.engine.ts
-//
-// ═══════════════════════════════════════════════════════════════════════════
-// RLM Engine v2 — Fixed iteration loop & observation handling
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// FIXES:
-//   1. Observation setelah FINAL() di sandbox sekarang meng-include jawaban
-//      (sebelumnya: jawaban dari Sub-LM tidak masuk observation)
-//   2. Root LM yang menulis jawaban tanpa code block ditangani lebih baik
-//   3. Fallback lebih robust — menggunakan context yang sudah di-load
-//
 
 import { Injectable } from '@nestjs/common';
 import { LlmApiClient, ChatMessage } from './llm-api.client';
@@ -26,8 +15,14 @@ export interface RLMResult {
   answer: string;
   references: string[];
   subQueryResults: SubQueryItem[];
+  // Total gabungan (backward compat)
   totalInputTokens: number;
   totalOutputTokens: number;
+  // Breakdown per model — BARU
+  rootInputTokens: number;
+  rootOutputTokens: number;
+  subInputTokens: number;
+  subOutputTokens: number;
   totalIterations: number;
   depth: number;
   execLog: string[];
@@ -68,8 +63,13 @@ export class RlmEngine {
     const subQueryResults: SubQueryItem[] = [];
     const references: string[] = [];
     const selectedDocumentIds: number[] = [];
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
+
+    // ── Token tracking dipisah per model ──────────────────
+    let rootInputTokens  = 0;  // gpt-5.1
+    let rootOutputTokens = 0;  // gpt-5.1
+    let subInputTokens   = 0;  // gpt-5-mini
+    let subOutputTokens  = 0;  // gpt-5-mini
+
     let totalIterations = 0;
     let currentDepth = 1;
 
@@ -94,8 +94,10 @@ export class RlmEngine {
 
       const trimmedHistory = this.trimHistory(conversationHistory);
       const response = await this.llmApiClient.queryRootLM(trimmedHistory);
-      totalInputTokens += response.input_tokens;
-      totalOutputTokens += response.output_tokens;
+
+      // Root LM token → gpt-5.1
+      rootInputTokens  += response.input_tokens;
+      rootOutputTokens += response.output_tokens;
 
       console.log(
         `[RLM] 📨 GPT response preview: "${response.content.slice(0, 300)}"`,
@@ -106,7 +108,6 @@ export class RlmEngine {
         content: response.content,
       });
 
-      // ── FIX #2: Cek FINAL() di luar code block ──
       const codeBlock = this.extractCodeBlock(response.content);
       const finalMatch = response.content.match(
         /FINAL\(([^)]*(?:\([^)]*\)[^)]*)*)\)/s,
@@ -114,57 +115,36 @@ export class RlmEngine {
 
       if (finalMatch && !codeBlock) {
         const answer = finalMatch[1].trim();
-        // Validate: jangan terima FINAL() yang berisi placeholder atau terlalu pendek
         if (
           answer &&
           !answer.includes('__LLM_PLACEHOLDER') &&
           answer.length > 5
         ) {
           console.log('\n[RLM] 🏁 FINAL() detected outside code block');
-          return {
-            answer,
-            references,
-            subQueryResults,
-            totalInputTokens,
-            totalOutputTokens,
-            totalIterations,
-            depth: currentDepth,
-            execLog: this.replSandbox.getExecLog(),
+          return this.buildResult({
+            answer, references, subQueryResults,
+            rootInputTokens, rootOutputTokens,
+            subInputTokens, subOutputTokens,
+            totalIterations, currentDepth,
             selectedDocumentIds,
-          };
+          });
         }
       }
 
-      // ── FIX #2: Root LM menulis jawaban langsung tanpa code block dan tanpa FINAL ──
       if (!codeBlock && !finalMatch) {
         const plainAnswer = response.content.trim();
-
-        // Heuristik: jika jawaban panjang dan informatif, mungkin Root LM
-        // sudah memberikan jawaban langsung (tanpa wrapping FINAL())
-        // Ini terjadi terutama setelah iterasi pertama berhasil load dokumen
         if (plainAnswer.length > 200 && i > 0) {
-          console.log(
-            '[RLM] 💡 Root LM provided direct answer without FINAL() wrapper',
-          );
-          console.log(
-            '[RLM] 💡 Accepting as final answer since it appears substantive',
-          );
-          return {
-            answer: plainAnswer,
-            references,
-            subQueryResults,
-            totalInputTokens,
-            totalOutputTokens,
-            totalIterations,
-            depth: currentDepth,
-            execLog: this.replSandbox.getExecLog(),
+          console.log('[RLM] 💡 Root LM provided direct answer without FINAL()');
+          return this.buildResult({
+            answer: plainAnswer, references, subQueryResults,
+            rootInputTokens, rootOutputTokens,
+            subInputTokens, subOutputTokens,
+            totalIterations, currentDepth,
             selectedDocumentIds,
-          };
+          });
         }
 
-        console.log(
-          '[RLM] ⚠️  No code block found, prompting Root LM to use REPL',
-        );
+        console.log('[RLM] ⚠️  No code block found, prompting Root LM to use REPL');
         conversationHistory.push({
           role: 'user',
           content:
@@ -186,7 +166,7 @@ export class RlmEngine {
       // ── Eksekusi di sandbox ──
       const execResult = await this.replSandbox.execute(
         codeBlock,
-        // llm_query callback
+        // llm_query callback → Sub LM (gpt-5-mini)
         async (prompt: string) => {
           currentDepth++;
           console.log(`[RLM] 🔬 Sub-LM called (depth=${currentDepth})`);
@@ -209,20 +189,23 @@ AKURASI:
 - Jika informasi yang ditanyakan tidak ada di dokumen, jawab dengan sopan bahwa informasi tersebut tidak tercantum dalam SOP yang tersedia.`,
             prompt,
           );
-          totalInputTokens += subResponse.input_tokens;
-          totalOutputTokens += subResponse.output_tokens;
+
+          // Sub LM token → gpt-5-mini
+          subInputTokens  += subResponse.input_tokens;
+          subOutputTokens += subResponse.output_tokens;
+
           subQueryResults.push({
             subQuestion: prompt.slice(0, 200),
-            answer: subResponse.content,
-            tokensUsed: subResponse.input_tokens + subResponse.output_tokens,
-            depth: currentDepth,
+            answer:      subResponse.content,
+            tokensUsed:  subResponse.input_tokens + subResponse.output_tokens,
+            depth:       currentDepth,
           });
           return subResponse.content;
         },
         // load_document callback
         async (id: number) => {
           console.log(`[RLM] 📂 Loading document id=${id}`);
-          const content = await loadDocumentFn(id);
+          const content    = await loadDocumentFn(id);
           const normalized = this.normalizeDocument(content);
           if (!selectedDocumentIds.includes(id)) {
             selectedDocumentIds.push(id);
@@ -235,20 +218,11 @@ AKURASI:
         },
       );
 
-      console.log(
-        '[RLM] 📤 execResult.finalAnswer:',
-        execResult.finalAnswer?.slice(0, 200),
-      );
+      console.log('[RLM] 📤 execResult.finalAnswer:', execResult.finalAnswer?.slice(0, 200));
       console.log('[RLM] 📤 execResult.error:', execResult.error);
 
-      // ── Cek final answer dari sandbox ──
-      // FINAL() bisa dipanggil sebelum error terjadi, jadi cek finalAnswer
-      // terlepas dari ada error atau tidak.
       if (execResult.finalAnswer) {
         const answer = execResult.finalAnswer.trim();
-
-        // FIX #2: Validate jawaban bukan placeholder dan bukan "tidak tersedia"
-        // yang disebabkan oleh prompt kosong
         if (answer.includes('__LLM_PLACEHOLDER')) {
           console.log('[RLM] ⚠️  FINAL() contains placeholder, continuing...');
           conversationHistory.push({
@@ -260,20 +234,15 @@ AKURASI:
         }
 
         console.log('\n[RLM] 🏁 FINAL() called inside code → selesai');
-        return {
-          answer,
-          references,
-          subQueryResults,
-          totalInputTokens,
-          totalOutputTokens,
-          totalIterations,
-          depth: currentDepth,
-          execLog: this.replSandbox.getExecLog(),
+        return this.buildResult({
+          answer, references, subQueryResults,
+          rootInputTokens, rootOutputTokens,
+          subInputTokens, subOutputTokens,
+          totalIterations, currentDepth,
           selectedDocumentIds,
-        };
+        });
       }
 
-      // ── Build observation ──
       const observation = this.buildObservation(execResult);
       console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 300)}..."`);
       conversationHistory.push({
@@ -289,24 +258,60 @@ AKURASI:
       subQueryResults,
       repl,
     );
-    totalInputTokens += fallback.inputTokens;
-    totalOutputTokens += fallback.outputTokens;
+
+    // Fallback juga pakai Root LM
+    rootInputTokens  += fallback.inputTokens;
+    rootOutputTokens += fallback.outputTokens;
+
+    return this.buildResult({
+      answer: fallback.answer, references, subQueryResults,
+      rootInputTokens, rootOutputTokens,
+      subInputTokens, subOutputTokens,
+      totalIterations, currentDepth,
+      selectedDocumentIds,
+    });
+  }
+
+  // ── Helper: bangun RLMResult ───────────────────────────
+
+  private buildResult(params: {
+    answer: string;
+    references: string[];
+    subQueryResults: SubQueryItem[];
+    rootInputTokens: number;
+    rootOutputTokens: number;
+    subInputTokens: number;
+    subOutputTokens: number;
+    totalIterations: number;
+    currentDepth: number;
+    selectedDocumentIds: number[];
+  }): RLMResult {
+    const totalInputTokens  = params.rootInputTokens  + params.subInputTokens;
+    const totalOutputTokens = params.rootOutputTokens + params.subOutputTokens;
+
+    console.log(
+      `[RLM] 📊 Token breakdown → Root: in=${params.rootInputTokens} out=${params.rootOutputTokens} | Sub: in=${params.subInputTokens} out=${params.subOutputTokens}`,
+    );
 
     return {
-      answer: fallback.answer,
-      references,
-      subQueryResults,
+      answer:            params.answer,
+      references:        params.references,
+      subQueryResults:   params.subQueryResults,
       totalInputTokens,
       totalOutputTokens,
-      totalIterations,
-      depth: currentDepth,
-      execLog: this.replSandbox.getExecLog(),
-      selectedDocumentIds,
+      rootInputTokens:   params.rootInputTokens,
+      rootOutputTokens:  params.rootOutputTokens,
+      subInputTokens:    params.subInputTokens,
+      subOutputTokens:   params.subOutputTokens,
+      totalIterations:   params.totalIterations,
+      depth:             params.currentDepth,
+      execLog:           this.replSandbox.getExecLog(),
+      selectedDocumentIds: params.selectedDocumentIds,
     };
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // OBSERVATION BUILDER — FIX #1: Include Sub-LM results
+  // OBSERVATION BUILDER
   // ══════════════════════════════════════════════════════════════════════════
 
   private buildObservation(execResult: {
@@ -340,8 +345,7 @@ AKURASI:
     }
 
     if (!obs.trim()) {
-      obs =
-        'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
+      obs = 'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
     }
 
     return obs;
@@ -352,11 +356,11 @@ AKURASI:
   // ══════════════════════════════════════════════════════════════════════════
 
   private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
-  const docList = allDocuments
-    .map((d) => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
-    .join('\n');
+    const docList = allDocuments
+      .map((d) => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
+      .join('\n');
 
-  return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
+    return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
 Standar Operasional Prosedur (SOP).
 
 === DOKUMEN TERSEDIA ===
@@ -381,6 +385,7 @@ ${docList}
 - \`FINAL(jawaban)\`         → berikan jawaban akhir
 
 === ATURAN PENTING ===
+- Gunakan JavaScript karena sistem ini menjalankan code di sandbox JavaScript.
 - WAJIB pakai \`await\` untuk load_document() dan llm_query()
 - WAJIB panggil load_document() sebelum mengakses context
 - SATU code block per respons (gunakan \`\`\`repl)
@@ -402,16 +407,7 @@ await load_document(4)
 
 // Step 2: Filter context — ambil bagian yang relevan saja
 const lines = context.split('\\n')
-
-// Buat keyword dari pertanyaan user
 const keywords = ['biro perencanaan', 'kepala biro', 'perencanaan']
-
-// Filter baris yang mengandung keyword
-const relevantLines = lines.filter(line =>
-  keywords.some(kw => line.toLowerCase().includes(kw.toLowerCase()))
-)
-
-// Ambil konteks sekitar setiap baris relevan (±2 baris)
 const relevantIndices = new Set()
 lines.forEach((line, i) => {
   if (keywords.some(kw => line.toLowerCase().includes(kw.toLowerCase()))) {
@@ -421,35 +417,22 @@ lines.forEach((line, i) => {
   }
 })
 const filteredContext = [...relevantIndices].sort((a, b) => a - b).map(i => lines[i]).join('\\n')
-
-// Fallback jika hasil filter terlalu sedikit
 const contextToSend = filteredContext.length > 200
   ? filteredContext.slice(0, 5000)
   : context.slice(0, 5000)
 
 print('Filtered context length:', contextToSend.length)
 
-// Step 3: Analisis dengan Sub-LM menggunakan context yang sudah difilter
+// Step 3: Analisis dengan Sub-LM
 const result = await llm_query(\`
 Berdasarkan dokumen SOP di bawah, jawab pertanyaan user.
-
-INSTRUKSI:
-- Jawab dengan gaya conversational yang ramah tapi tetap profesional.
-- Format jawaban dalam Markdown (bold untuk hal penting, numbered list untuk langkah).
-- Gunakan NOMOR LANGKAH persis dari dokumen (Langkah 5.1, 5.2, dst).
-- Gunakan NAMA JABATAN persis dari dokumen (Mgr DYM, Mgr HRD, Staf HRD).
-- Gunakan NAMA FORMULIR persis dari dokumen (Form Permintaan Karyawan Baru).
-- JANGAN mengarang informasi yang tidak ada di dokumen.
-
-Dokumen SOP (bagian relevan):
-\${contextToSend}
-
+Dokumen SOP (bagian relevan): \${contextToSend}
 Pertanyaan: [pertanyaan user]
 \`)
 
 FINAL(result)
 \`\`\``;
-}
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // HELPERS
@@ -481,11 +464,9 @@ FINAL(result)
   ): ChatMessage[] {
     if (history.length <= maxMessages) return history;
     const systemPrompt = history[0];
-    const firstUser = history[1];
-    const recent = history.slice(-(maxMessages - 2));
-    console.log(
-      `[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`,
-    );
+    const firstUser    = history[1];
+    const recent       = history.slice(-(maxMessages - 2));
+    console.log(`[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`);
     return [systemPrompt, firstUser, ...recent];
   }
 
@@ -499,18 +480,15 @@ FINAL(result)
       .split(/\s+/)
       .filter((w) => w.length > 3);
     const lines = repl.getDocument().split('\n');
-    const hits = lines
+    const hits  = lines
       .filter((l) => keywords.some((kw) => l.toLowerCase().includes(kw)))
       .sort((a, b) => b.length - a.length)
-      .slice(0, 20) // FIX: ambil lebih banyak hits untuk fallback
+      .slice(0, 20)
       .join('\n');
 
-    // FIX: include sub-query answers yang valid
     const validSubAnswers = subQueryResults
       .filter((r) => !r.answer.includes('Tidak tersedia'))
-      .map(
-        (r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`,
-      )
+      .map((r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`)
       .join('\n\n---\n\n');
 
     const messages: ChatMessage[] = [
@@ -527,14 +505,14 @@ ${validSubAnswers ? `\nHasil analisis sebelumnya:\n${validSubAnswers}\n\n` : ''}
 Kutipan dari dokumen SOP:
 ${hits || 'Tidak ditemukan kutipan relevan'}
 
-Jawab pertanyaan berdasarkan kutipan di atas. Gunakan istilah dan nomor dari dokumen.`,
+Jawab pertanyaan berdasarkan kutipan di atas.`,
       },
     ];
 
     const response = await this.llmApiClient.queryRootLM(messages);
     return {
-      answer: response.content,
-      inputTokens: response.input_tokens,
+      answer:       response.content,
+      inputTokens:  response.input_tokens,
       outputTokens: response.output_tokens,
     };
   }

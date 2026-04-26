@@ -22,11 +22,50 @@ export class TokenUsageLog {
   @Column({ type: 'enum', enum: TokenMethod, nullable: false })
   method!: TokenMethod;
 
+  // ── Total tokens (gabungan semua model) ───────────────
   @Column({ type: 'int', nullable: false, default: 0 })
   input_tokens!: number;
 
   @Column({ type: 'int', nullable: false, default: 0 })
   output_tokens!: number;
+
+  // ── Root LM tokens (gpt-5.1) ─────────────────────────
+  // Untuk RLM: token dari loop utama + fallback (queryRootLM)
+  // Untuk CONV: sama dengan input_tokens / output_tokens (hanya pakai satu model)
+  @Column({
+    type: 'int',
+    nullable: false,
+    default: 0,
+    comment: 'Token input dari Root LM (gpt-5.1) — loop utama RLM atau seluruh CONV',
+  })
+  root_input_tokens!: number;
+
+  @Column({
+    type: 'int',
+    nullable: false,
+    default: 0,
+    comment: 'Token output dari Root LM (gpt-5.1) — loop utama RLM atau seluruh CONV',
+  })
+  root_output_tokens!: number;
+
+  // ── Sub LM tokens (gpt-5-mini) ────────────────────────
+  // Untuk RLM: token dari setiap llm_query() di dalam sandbox
+  // Untuk CONV: selalu 0 (tidak menggunakan Sub LM)
+  @Column({
+    type: 'int',
+    nullable: false,
+    default: 0,
+    comment: 'Token input dari Sub LM (gpt-5-mini) — setiap llm_query() di sandbox RLM. 0 untuk CONV.',
+  })
+  sub_input_tokens!: number;
+
+  @Column({
+    type: 'int',
+    nullable: false,
+    default: 0,
+    comment: 'Token output dari Sub LM (gpt-5-mini) — setiap llm_query() di sandbox RLM. 0 untuk CONV.',
+  })
+  sub_output_tokens!: number;
 
   @Column({
     type: 'int',
