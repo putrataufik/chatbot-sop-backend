@@ -44,7 +44,7 @@ export class ChatService {
           {
             role: 'system',
             content:
-              'Buat judul singkat (maks 5 kata, bahasa Indonesia) dari pertanyaan berikut. ' +
+              'Buat judul singkat (maks 5 kata) dari pertanyaan berikut. ' +
               'Balas hanya judulnya saja, tanpa tanda kutip, tanpa penjelasan.',
           },
           { role: 'user', content: firstMessage },
@@ -291,6 +291,13 @@ export class ChatService {
       });
       const costSavings = convCost.total_cost_usd - rlmCost.total_cost_usd;
 
+      // ── Response time per row ──
+      const rlmTime  = rlmLog.response_time_ms  ?? 0;
+      const convTime = convLog.response_time_ms ?? 0;
+      const timeDiff = Math.abs(rlmTime - convTime);
+      const timeFaster: 'RLM' | 'CONV' | 'SAMA' =
+        timeDiff === 0 ? 'SAMA' : rlmTime < convTime ? 'RLM' : 'CONV';
+
       rows.push({
         message_id:        aMsg.id,
         timestamp:         aMsg.timestamp,
@@ -305,6 +312,7 @@ export class ChatService {
           root_output_tokens: rlmLog.root_output_tokens,
           sub_input_tokens:   rlmLog.sub_input_tokens,
           sub_output_tokens:  rlmLog.sub_output_tokens,
+          response_time_ms:   rlmTime,
           cost: {
             root: {
               model:           'gpt-5.1',
@@ -322,9 +330,10 @@ export class ChatService {
           },
         },
         conv: {
-          input_tokens:  convLog.input_tokens,
-          output_tokens: convLog.output_tokens,
-          total_tokens:  convTotal,
+          input_tokens:     convLog.input_tokens,
+          output_tokens:    convLog.output_tokens,
+          total_tokens:     convTotal,
+          response_time_ms: convTime,
           cost: {
             model:           'gpt-5.1',
             input_cost_usd:  formatUsd(convCost.root.input_cost_usd),
@@ -339,6 +348,8 @@ export class ChatService {
           token_savings:          savings,
           percentage_saved:       percentageSaved,
           cost_savings_usd:       formatUsd(costSavings),
+          response_time_diff_ms:  timeDiff,
+          response_time_faster:   timeFaster,
         },
       });
     }
@@ -369,6 +380,30 @@ export class ChatService {
       ? ((totalSavings / totalConvTokens) * 100).toFixed(1) + '%'
       : '0%';
 
+    // ── Summary response time ────────────────────────────
+    const avgRlmResponseTime = rows.length > 0
+      ? Math.round(rows.reduce((s, r) => s + (r.rlm.response_time_ms ?? 0), 0) / rows.length)
+      : 0;
+    const avgConvResponseTime = rows.length > 0
+      ? Math.round(rows.reduce((s, r) => s + (r.conv.response_time_ms ?? 0), 0) / rows.length)
+      : 0;
+    const minRlmResponseTime = rows.length > 0
+      ? Math.min(...rows.map((r) => r.rlm.response_time_ms ?? 0))
+      : 0;
+    const maxRlmResponseTime = rows.length > 0
+      ? Math.max(...rows.map((r) => r.rlm.response_time_ms ?? 0))
+      : 0;
+    const minConvResponseTime = rows.length > 0
+      ? Math.min(...rows.map((r) => r.conv.response_time_ms ?? 0))
+      : 0;
+    const maxConvResponseTime = rows.length > 0
+      ? Math.max(...rows.map((r) => r.conv.response_time_ms ?? 0))
+      : 0;
+    const avgTimeDiff = Math.abs(avgRlmResponseTime - avgConvResponseTime);
+    const avgTimeFaster: 'RLM' | 'CONV' | 'SAMA' =
+      avgTimeDiff === 0 ? 'SAMA' : avgRlmResponseTime < avgConvResponseTime ? 'RLM' : 'CONV';
+
+    // ── Cost ─────────────────────────────────────────────
     const totalRlmCost  = calcTokenCost({
       root_input_tokens:  totalRlmRootInput,
       root_output_tokens: totalRlmRootOutput,
@@ -390,6 +425,7 @@ export class ChatService {
       sop_query_count: rows.length,
       rows,
       summary: {
+        // Token
         total_rlm_input_tokens:       totalRlmInput,
         total_rlm_output_tokens:      totalRlmOutput,
         total_rlm_tokens:             totalRlmTokens,
@@ -401,10 +437,27 @@ export class ChatService {
         avg_output_efficiency:        avgOutputEfficiency,
         avg_efficiency_ratio:         avgEfficiencyRatio,
         avg_percentage_saved:         avgPercentageSaved,
+        // Token breakdown RLM per model
         total_rlm_root_input_tokens:  totalRlmRootInput,
         total_rlm_root_output_tokens: totalRlmRootOutput,
         total_rlm_sub_input_tokens:   totalRlmSubInput,
         total_rlm_sub_output_tokens:  totalRlmSubOutput,
+        // Response time
+        response_time: {
+          rlm: {
+            avg_ms: avgRlmResponseTime,
+            min_ms: minRlmResponseTime,
+            max_ms: maxRlmResponseTime,
+          },
+          conv: {
+            avg_ms: avgConvResponseTime,
+            min_ms: minConvResponseTime,
+            max_ms: maxConvResponseTime,
+          },
+          avg_diff_ms: avgTimeDiff,
+          avg_faster:  avgTimeFaster,
+        },
+        // Cost
         cost: {
           rlm: {
             root: {

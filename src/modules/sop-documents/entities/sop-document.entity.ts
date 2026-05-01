@@ -1,5 +1,5 @@
 // FILE: src/modules/sop-documents/entities/sop-document.entity.ts
-// ✅ Tambah SopFormat.DOCX
+// ✅ Breaking change: hanya PDF
 
 import {
   Entity, PrimaryGeneratedColumn, Column,
@@ -8,9 +8,7 @@ import {
 import { User } from '../../users/entities/user.entity';
 
 export enum SopFormat {
-  PDF  = 'PDF',
-  DOCX = 'DOCX', // ← TAMBAH
-  TXT  = 'TXT',
+  PDF = 'PDF',
 }
 
 @Entity('sop_documents')
@@ -35,7 +33,7 @@ export class SopDocument {
 
   @ManyToOne(() => User, (user) => user.sop_documents, {
     nullable: false,
-    onDelete: 'RESTRICT', // Prevent deleting admin if they have uploaded SOPs
+    onDelete: 'RESTRICT',
   })
   @JoinColumn({ name: 'uploaded_by' })
   uploaded_by_user!: User;

@@ -11,7 +11,7 @@ import { Message } from '../../chat/entities/message.entity';
 
 export enum TokenMethod {
   CONV = 'CONV', // Conventional (tanpa RLM) → sebagai baseline
-  RLM = 'RLM',  // Recursive Language Model
+  RLM  = 'RLM',  // Recursive Language Model
 }
 
 @Entity('token_usage_logs')
@@ -66,6 +66,17 @@ export class TokenUsageLog {
     comment: 'Token output dari Sub LM (gpt-5-mini) — setiap llm_query() di sandbox RLM. 0 untuk CONV.',
   })
   sub_output_tokens!: number;
+
+  // ── Response time ─────────────────────────────────────
+  // Untuk RLM: waktu total dari request masuk hingga jawaban disimpan
+  // Untuk CONV: waktu aktual proses konvensional (berjalan paralel dengan RLM)
+  @Column({
+    type: 'int',
+    nullable: false,
+    default: 0,
+    comment: 'Waktu respons dalam milidetik. RLM = total waktu end-to-end. CONV = waktu proses paralel konvensional.',
+  })
+  response_time_ms!: number;
 
   @Column({
     type: 'int',

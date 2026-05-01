@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Param,
   Body,
@@ -59,6 +60,23 @@ export class ChatController {
     return this.chatService.findSessionById(id, req.user);
   }
 
+  @Patch('sessions/:id/rename')
+  @ApiOperation({ summary: 'Ganti nama session chat' })
+  @ApiResponse({ status: 200, description: 'Nama session berhasil diubah' })
+  @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  async renameSession(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('title') title: string,
+    @Request() req: any,
+  ) {
+    // findSessionById sudah handle 404 & 403
+    await this.chatService.findSessionById(id, req.user);
+    const newTitle = (title ?? '').trim();
+    await this.chatService.updateSessionTitle(id, newTitle);
+    return { message: 'Nama session berhasil diubah', id, title: newTitle };
+  }
+
   @Delete('sessions/:id')
   @ApiOperation({ summary: 'Hapus session chat' })
   @ApiResponse({ status: 200, description: 'Session berhasil dihapus' })
@@ -79,7 +97,6 @@ export class ChatController {
     return this.chatService.findMessagesBySession(id, req.user);
   }
 
-  // Send message → proses dengan RLM Engine
   @Post('sessions/:id/messages')
   @ApiOperation({ summary: 'Kirim pesan dan dapatkan jawaban dari RLM' })
   @ApiResponse({ status: 201, description: 'Pesan berhasil diproses' })
@@ -119,14 +136,7 @@ export class ChatController {
   // ── Token Comparison agregat per Session ──────────────
 
   @Get('sessions/:sessionId/token-comparison')
-  @ApiOperation({
-    summary: 'Perbandingan token RLM vs CONV agregat per session',
-    description:
-      'Mengembalikan semua baris perbandingan token (hanya SOP_QUERY) ' +
-      'beserta isi chat (user_content & assistant_content) dan summary agregat. ' +
-      'Kolom: Input Token RLM/CONV, Output Token RLM/CONV, ' +
-      'Input Efficiency, Output Efficiency, Total Token RLM/CONV, Efficiency Ratio CONV/RLM.',
-  })
+  @ApiOperation({ summary: 'Perbandingan token RLM vs CONV agregat per session' })
   @ApiResponse({ status: 200, description: 'Berhasil' })
   @ApiResponse({ status: 404, description: 'Session tidak ditemukan' })
   @ApiResponse({ status: 403, description: 'Forbidden' })
@@ -136,6 +146,4 @@ export class ChatController {
   ) {
     return this.chatService.getSessionTokenComparison(sessionId, req.user);
   }
-
-  
 }

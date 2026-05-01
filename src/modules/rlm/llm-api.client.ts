@@ -73,7 +73,6 @@ export class LlmApiClient {
     );
     console.log(`[LLM] 💬 Content raw length: ${content.length}`);
     console.log(`[LLM] 💬 Content preview: "${content.slice(0, 200)}"`);
-
     return {
       content,
       input_tokens: usage.prompt_tokens,

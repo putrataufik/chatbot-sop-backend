@@ -1,8 +1,5 @@
 // FILE: src/modules/sop-documents/sop-documents.service.ts
-// ✅ Mendukung: .pdf, .docx, .txt
-// PDF  → PdfExtractorService  (koordinat x,y + algoritma swim-lane)
-// DOCX → DocxExtractorService (baca XML langsung → struktur sempurna)
-// TXT  → baca langsung
+// ✅ Hanya menerima file .pdf
 
 import {
   Injectable,
@@ -13,8 +10,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Not, Repository } from 'typeorm';
 import { SopDocument, SopFormat } from './entities/sop-document.entity';
 import { User } from '../users/entities/user.entity';
-import { PdfExtractorService } from './docx-extractor.service';
 import * as path from 'path';
+import { PdfExtractorService } from './docx-extractor.service';
+
+// ── Type aliases (menghindari nested generic yang panjang) ──
+type SopMetadata = { id: number; title: string; file_size: number };
+type SopWithContent = { id: number; title: string; content: string };
 
 @Injectable()
 export class SopDocumentsService {
@@ -27,10 +28,8 @@ export class SopDocumentsService {
   private detectFormat(filename: string): SopFormat {
     const ext = path.extname(filename).toLowerCase();
     if (ext === '.pdf') return SopFormat.PDF;
-    if (ext === '.docx') return SopFormat.DOCX; // ← tambah
-    if (ext === '.txt') return SopFormat.TXT;
     throw new BadRequestException(
-      `Format tidak didukung: ${ext}. Gunakan .pdf, .docx, atau .txt`,
+      `Format tidak didukung: ${ext}. Hanya menerima file .pdf`,
     );
   }
 
@@ -38,13 +37,8 @@ export class SopDocumentsService {
     return path.basename(filename, path.extname(filename));
   }
 
-  private async extractContent(
-    buffer: Buffer,
-    format: SopFormat,
-  ): Promise<string> {
-    if (format === SopFormat.TXT) return buffer.toString('utf-8');
-    if (format === SopFormat.PDF) return this.pdfExtractor.extract(buffer);
-    throw new BadRequestException('Format tidak didukung');
+  private async extractContent(buffer: Buffer): Promise<string> {
+    return this.pdfExtractor.extract(buffer);
   }
 
   async createBulk(
@@ -66,7 +60,7 @@ export class SopDocumentsService {
         const isExist = await this.sopRepository.findOne({ where: { title } });
         if (isExist) throw new Error(`Judul "${title}" sudah terdaftar.`);
 
-        const content = await this.extractContent(file.buffer, format);
+        const content = await this.extractContent(file.buffer);
 
         const sop = this.sopRepository.create({
           title,
@@ -145,18 +139,14 @@ export class SopDocumentsService {
     };
   }
 
-  async findAllMetadata(): Promise<
-    Array<{ id: number; title: string; file_size: number }>
-  > {
+  async findAllMetadata(): Promise<SopMetadata[]> {
     return this.sopRepository
       .createQueryBuilder('doc')
       .select(['doc.id', 'doc.title', 'doc.file_size'])
       .getMany();
   }
 
-  async findAllWithContent(): Promise<
-    Array<{ id: number; title: string; content: string }>
-  > {
+  async findAllWithContent(): Promise<SopWithContent[]> {
     return this.sopRepository
       .createQueryBuilder('doc')
       .select(['doc.id', 'doc.title', 'doc.content'])
