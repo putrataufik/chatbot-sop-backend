@@ -19,8 +19,10 @@ export interface RLMResult {
   totalOutputTokens: number;
   rootInputTokens: number;
   rootOutputTokens: number;
+  rootCachedInputTokens: number;
   subInputTokens: number;
   subOutputTokens: number;
+  subCachedInputTokens: number;
   totalIterations: number;
   depth: number;
   execLog: string[];
@@ -62,10 +64,12 @@ export class RlmEngine {
     const references: string[] = [];
     const selectedDocumentIds: number[] = [];
 
-    let rootInputTokens  = 0;
+    let rootInputTokens = 0;
     let rootOutputTokens = 0;
-    let subInputTokens   = 0;
-    let subOutputTokens  = 0;
+    let rootCachedInputTokens = 0;
+    let subInputTokens = 0;
+    let subOutputTokens = 0;
+    let subCachedInputTokens = 0;
 
     let totalIterations = 0;
     let currentDepth = 1;
@@ -84,12 +88,16 @@ export class RlmEngine {
       const trimmedHistory = this.trimHistory(conversationHistory);
       const response = await this.llmApiClient.queryRootLM(trimmedHistory);
 
-      rootInputTokens  += response.input_tokens;
+      rootInputTokens += response.input_tokens;
       rootOutputTokens += response.output_tokens;
+      rootCachedInputTokens += response.cached_input_tokens;
 
       console.log(`[RLM] 📨 GPT preview: "${response.content.slice(0, 200)}"`);
 
-      conversationHistory.push({ role: 'assistant', content: response.content });
+      conversationHistory.push({
+        role: 'assistant',
+        content: response.content,
+      });
 
       const codeBlock = this.extractCodeBlock(response.content);
       const finalMatch = response.content.match(
@@ -98,13 +106,24 @@ export class RlmEngine {
 
       if (finalMatch && !codeBlock) {
         const answer = finalMatch[1].trim();
-        if (answer && !answer.includes('__LLM_PLACEHOLDER') && answer.length > 5) {
+        if (
+          answer &&
+          !answer.includes('__LLM_PLACEHOLDER') &&
+          answer.length > 5
+        ) {
           console.log('\n[RLM] 🏁 FINAL() detected outside code block');
           return this.buildResult({
-            answer, references, subQueryResults,
-            rootInputTokens, rootOutputTokens,
-            subInputTokens, subOutputTokens,
-            totalIterations, currentDepth,
+            answer,
+            references,
+            subQueryResults,
+            rootInputTokens,
+            rootOutputTokens,
+            rootCachedInputTokens,
+            subInputTokens,
+            subOutputTokens,
+            subCachedInputTokens,
+            totalIterations,
+            currentDepth,
             selectedDocumentIds,
           });
         }
@@ -115,10 +134,17 @@ export class RlmEngine {
         if (plainAnswer.length > 200 && i > 0) {
           console.log('[RLM] 💡 Direct answer without FINAL()');
           return this.buildResult({
-            answer: plainAnswer, references, subQueryResults,
-            rootInputTokens, rootOutputTokens,
-            subInputTokens, subOutputTokens,
-            totalIterations, currentDepth,
+            answer: plainAnswer,
+            references,
+            subQueryResults,
+            rootInputTokens,
+            rootOutputTokens,
+            rootCachedInputTokens,
+            subInputTokens,
+            subOutputTokens,
+            subCachedInputTokens,
+            totalIterations,
+            currentDepth,
             selectedDocumentIds,
           });
         }
@@ -126,7 +152,8 @@ export class RlmEngine {
         console.log('[RLM] ⚠️  No code block, prompting REPL');
         conversationHistory.push({
           role: 'user',
-          content: 'Observation: No code block found. Write code in ```repl block, or call FINAL(answer) inside it.',
+          content:
+            'Observation: No code block found. Write code in ```repl block, or call FINAL(answer) inside it.',
         });
         continue;
       }
@@ -135,7 +162,8 @@ export class RlmEngine {
         console.log('[RLM] ⚠️  No valid code block');
         conversationHistory.push({
           role: 'user',
-          content: 'Observation: No valid code block. Write code in ```repl block.',
+          content:
+            'Observation: No valid code block. Write code in ```repl block.',
         });
         continue;
       }
@@ -151,20 +179,21 @@ export class RlmEngine {
             prompt,
           );
 
-          subInputTokens  += subResponse.input_tokens;
+          subInputTokens += subResponse.input_tokens;
           subOutputTokens += subResponse.output_tokens;
+          subCachedInputTokens += subResponse.cached_input_tokens;
 
           subQueryResults.push({
             subQuestion: prompt.slice(0, 200),
-            answer:      subResponse.content,
-            tokensUsed:  subResponse.input_tokens + subResponse.output_tokens,
-            depth:       currentDepth,
+            answer: subResponse.content,
+            tokensUsed: subResponse.input_tokens + subResponse.output_tokens,
+            depth: currentDepth,
           });
           return subResponse.content;
         },
         async (id: number) => {
           console.log(`[RLM] 📂 Loading document id=${id}`);
-          const content    = await loadDocumentFn(id);
+          const content = await loadDocumentFn(id);
           const normalized = this.normalizeDocument(content);
           if (!selectedDocumentIds.includes(id)) {
             selectedDocumentIds.push(id);
@@ -175,7 +204,10 @@ export class RlmEngine {
         },
       );
 
-      console.log('[RLM] 📤 finalAnswer:', execResult.finalAnswer?.slice(0, 200));
+      console.log(
+        '[RLM] 📤 finalAnswer:',
+        execResult.finalAnswer?.slice(0, 200),
+      );
       console.log('[RLM] 📤 error:', execResult.error);
 
       if (execResult.finalAnswer) {
@@ -184,17 +216,25 @@ export class RlmEngine {
           console.log('[RLM] ⚠️  FINAL() contains placeholder, continuing...');
           conversationHistory.push({
             role: 'user',
-            content: 'Observation: FINAL() contains an unresolved placeholder. Make sure llm_query() is awaited and assigned to a variable before FINAL().',
+            content:
+              'Observation: FINAL() contains an unresolved placeholder. Make sure llm_query() is awaited and assigned to a variable before FINAL().',
           });
           continue;
         }
 
         console.log('\n[RLM] 🏁 FINAL() called → done');
         return this.buildResult({
-          answer, references, subQueryResults,
-          rootInputTokens, rootOutputTokens,
-          subInputTokens, subOutputTokens,
-          totalIterations, currentDepth,
+          answer,
+          references,
+          subQueryResults,
+          rootInputTokens,
+          rootOutputTokens,
+          rootCachedInputTokens,
+          subInputTokens,
+          subOutputTokens,
+          subCachedInputTokens,
+          totalIterations,
+          currentDepth,
           selectedDocumentIds,
         });
       }
@@ -209,16 +249,28 @@ export class RlmEngine {
 
     // ── Fallback ──
     console.log('\n[RLM] ⚠️  Max iterations reached');
-    const fallback = await this.buildFallbackAnswer(userQuestion, subQueryResults, repl);
+    const fallback = await this.buildFallbackAnswer(
+      userQuestion,
+      subQueryResults,
+      repl,
+    );
 
-    rootInputTokens  += fallback.inputTokens;
+    rootInputTokens += fallback.inputTokens;
     rootOutputTokens += fallback.outputTokens;
+    rootCachedInputTokens += fallback.cachedInputTokens;
 
     return this.buildResult({
-      answer: fallback.answer, references, subQueryResults,
-      rootInputTokens, rootOutputTokens,
-      subInputTokens, subOutputTokens,
-      totalIterations, currentDepth,
+      answer: fallback.answer,
+      references,
+      subQueryResults,
+      rootInputTokens,
+      rootOutputTokens,
+      rootCachedInputTokens,
+      subInputTokens,
+      subOutputTokens,
+      subCachedInputTokens,
+      totalIterations,
+      currentDepth,
       selectedDocumentIds,
     });
   }
@@ -233,32 +285,42 @@ export class RlmEngine {
     subQueryResults: SubQueryItem[];
     rootInputTokens: number;
     rootOutputTokens: number;
+    rootCachedInputTokens: number;
     subInputTokens: number;
     subOutputTokens: number;
+    subCachedInputTokens: number;
     totalIterations: number;
     currentDepth: number;
     selectedDocumentIds: number[];
   }): RLMResult {
-    const totalInputTokens  = params.rootInputTokens  + params.subInputTokens;
+    const totalInputTokens = params.rootInputTokens + params.subInputTokens;
     const totalOutputTokens = params.rootOutputTokens + params.subOutputTokens;
+    const totalCached =
+      params.rootCachedInputTokens + params.subCachedInputTokens;
+    const cacheHitPct =
+      totalInputTokens > 0
+        ? ((totalCached / totalInputTokens) * 100).toFixed(1)
+        : '0.0';
 
     console.log(
-      `[RLM] 📊 Tokens → Root: in=${params.rootInputTokens} out=${params.rootOutputTokens} | Sub: in=${params.subInputTokens} out=${params.subOutputTokens}`,
+      `[RLM] 📊 Tokens → Root: in=${params.rootInputTokens} (cached: ${params.rootCachedInputTokens}) out=${params.rootOutputTokens} | Sub: in=${params.subInputTokens} (cached: ${params.subCachedInputTokens}) out=${params.subOutputTokens} | Cache hit: ${cacheHitPct}%`,
     );
 
     return {
-      answer:              params.answer,
-      references:          params.references,
-      subQueryResults:     params.subQueryResults,
+      answer: params.answer,
+      references: params.references,
+      subQueryResults: params.subQueryResults,
       totalInputTokens,
       totalOutputTokens,
-      rootInputTokens:     params.rootInputTokens,
-      rootOutputTokens:    params.rootOutputTokens,
-      subInputTokens:      params.subInputTokens,
-      subOutputTokens:     params.subOutputTokens,
-      totalIterations:     params.totalIterations,
-      depth:               params.currentDepth,
-      execLog:             this.replSandbox.getExecLog(),
+      rootInputTokens: params.rootInputTokens,
+      rootOutputTokens: params.rootOutputTokens,
+      rootCachedInputTokens: params.rootCachedInputTokens,
+      subInputTokens: params.subInputTokens,
+      subOutputTokens: params.subOutputTokens,
+      subCachedInputTokens: params.subCachedInputTokens,
+      totalIterations: params.totalIterations,
+      depth: params.currentDepth,
+      execLog: this.replSandbox.getExecLog(),
       selectedDocumentIds: params.selectedDocumentIds,
     };
   }
@@ -309,11 +371,11 @@ export class RlmEngine {
   // ══════════════════════════════════════════════════════
 
   private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
-  const docList = allDocuments
-    .map((d) => `  - id:${d.id} | "${d.title}"`)
-    .join('\n');
+    const docList = allDocuments
+      .map((d) => `  - id:${d.id} | "${d.title}"`)
+      .join('\n');
 
-  return `You answer questions about SOP documents stored in RRF format with tags [DOC], [META], [SEC], [STEP], [INFO]. Each block has fields like actor, action, time, cond, form, note.
+    return `You answer questions about SOP documents stored in RRF format with tags [DOC], [META], [SEC], [STEP], [INFO]. Each block has fields like actor, action, time, cond, form, note.
 
 === AVAILABLE DOCUMENTS ===
 ${docList}
@@ -411,14 +473,14 @@ FINAL(result)
 === EXAMPLE: DESCRIPTIVE QUESTION ===
 Same skeleton, but skip the time-pattern step and add fallback:
 \`if (snippet.length < 100) snippet = blocks.filter(b => b.startsWith('[INFO]') || b.startsWith('[META]')).join('\\n\\n')\``;
-}
+  }
 
   // ══════════════════════════════════════════════════════
   // SUB-LM SYSTEM PROMPT — singkat
   // ══════════════════════════════════════════════════════
 
   private buildSubLMSystemPrompt(): string {
-  return `You are an assistant answering questions about a document. Use ONLY the snippet provided in the user prompt.
+    return `You are an assistant answering questions about a document. Use ONLY the snippet provided in the user prompt.
 
 READING METHOD (CRITICAL):
 - Read EVERY block in the snippet carefully, including narrative paragraphs inside [INFO] blocks.
@@ -437,7 +499,7 @@ ACCURACY:
 - Quote names, IDs, durations, and form names EXACTLY as written.
 - Only say "the document does not specify" if you have read EVERY block and the information truly is not there. Be very reluctant to give this answer.
 - Do NOT invent content not in the snippet.`;
-}
+  }
 
   // ══════════════════════════════════════════════════════
   // HELPERS
@@ -456,12 +518,17 @@ ACCURACY:
     return null;
   }
 
-  private trimHistory(history: ChatMessage[], maxMessages: number = 10): ChatMessage[] {
+  private trimHistory(
+    history: ChatMessage[],
+    maxMessages: number = 10,
+  ): ChatMessage[] {
     if (history.length <= maxMessages) return history;
     const systemPrompt = history[0];
-    const firstUser    = history[1];
-    const recent       = history.slice(-(maxMessages - 2));
-    console.log(`[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`);
+    const firstUser = history[1];
+    const recent = history.slice(-(maxMessages - 2));
+    console.log(
+      `[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`,
+    );
     return [systemPrompt, firstUser, ...recent];
   }
 
@@ -469,21 +536,32 @@ ACCURACY:
     originalQuestion: string,
     subQueryResults: SubQueryItem[],
     repl: ReplEnvironment,
-  ): Promise<{ answer: string; inputTokens: number; outputTokens: number }> {
+  ): Promise<{
+    answer: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+  }> {
     const keywords = originalQuestion
       .toLowerCase()
       .split(/\s+/)
       .filter((w) => w.length > 3);
     const lines = repl.getDocument().split('\n');
-    const hits  = lines
+    const hits = lines
       .filter((l) => keywords.some((kw) => l.toLowerCase().includes(kw)))
       .sort((a, b) => b.length - a.length)
       .slice(0, 20)
       .join('\n');
 
     const validSubAnswers = subQueryResults
-      .filter((r) => !r.answer.includes('Tidak tersedia') && !r.answer.includes('not available'))
-      .map((r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nAnswer: ${r.answer}`)
+      .filter(
+        (r) =>
+          !r.answer.includes('Tidak tersedia') &&
+          !r.answer.includes('not available'),
+      )
+      .map(
+        (r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nAnswer: ${r.answer}`,
+      )
       .join('\n\n---\n\n');
 
     const messages: ChatMessage[] = [
@@ -506,9 +584,10 @@ Answer based on the excerpt above.`,
 
     const response = await this.llmApiClient.queryRootLM(messages);
     return {
-      answer:       response.content,
-      inputTokens:  response.input_tokens,
+      answer: response.content,
+      inputTokens: response.input_tokens,
       outputTokens: response.output_tokens,
+      cachedInputTokens: response.cached_input_tokens,
     };
   }
 }

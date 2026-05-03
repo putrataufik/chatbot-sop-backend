@@ -11,6 +11,7 @@ export interface ConventionalResult {
   content: string;
   input_tokens: number;
   output_tokens: number;
+  cached_input_tokens: number;
   error_message: string | null;
 }
 
@@ -77,6 +78,7 @@ ${fullContext}`,
         content:       response.content,
         input_tokens:  response.input_tokens,
         output_tokens: response.output_tokens,
+        cached_input_tokens: response.cached_input_tokens,
         error_message: null,
       };
     } catch (err: any) {
@@ -85,6 +87,7 @@ ${fullContext}`,
         content:       '',
         input_tokens:  0,
         output_tokens: 0,
+        cached_input_tokens: 0,
         error_message: err.message,
       };
     }

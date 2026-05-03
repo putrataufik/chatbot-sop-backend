@@ -28,8 +28,11 @@ export interface TokenComparisonResult {
     rlm_depth: number;
     root_input_tokens: number;
     root_output_tokens: number;
+    root_cached_input_tokens: number;
     sub_input_tokens: number;
     sub_output_tokens: number;
+    sub_cached_input_tokens: number;
+    cache_hit_rate: string;
     response_time_ms: number;
     cost: {
       root: {
@@ -49,8 +52,10 @@ export interface TokenComparisonResult {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    cached_input_tokens: number;
     answer: string | null;
     error_message: string | null;
+    cache_hit_rate: string;
     response_time_ms: number;
     cost: {
       input_cost_usd: string;
@@ -89,8 +94,10 @@ export interface SendMessageResult {
     output_tokens: number;
     root_input_tokens: number;
     root_output_tokens: number;
+    root_cached_input_tokens: number;
     sub_input_tokens: number;
     sub_output_tokens: number;
+    sub_cached_input_tokens: number;
     rlm_depth: number;
     response_time_ms: number;
   };
@@ -110,7 +117,7 @@ export interface SendMessageResult {
     intent: IntentType;
   };
 }
-const ENABLE_CONV = process.env.ENABLE_CONV === 'true';
+const ENABLE_CONV = 'true';
 
 @Injectable()
 export class RlmService {
@@ -162,24 +169,26 @@ Reply with ONE word only.`,
     ];
 
     try {
-  const response = await this.llmApiClient.queryNano(messages);
-  const raw = response.content.trim().toUpperCase();
+      const response = await this.llmApiClient.queryNano(messages);
+      const raw = response.content.trim().toUpperCase();
 
-  // ── Tambahkan blok ini ──
-  if (!raw) {
-    console.log('[INTENT] Empty response from classifier, defaulting to SOP_QUERY');
-    return 'SOP_QUERY';
-  }
-  // ────────────────────────
+      // ── Tambahkan blok ini ──
+      if (!raw) {
+        console.log(
+          '[INTENT] Empty response from classifier, defaulting to SOP_QUERY',
+        );
+        return 'SOP_QUERY';
+      }
+      // ────────────────────────
 
-  console.log(`[INTENT] Classified as: ${raw}`);
-  if (raw.includes('CHITCHAT')) return 'CHITCHAT';
-  if (raw.includes('CONTEXTUAL')) return 'CONTEXTUAL';
-  return 'SOP_QUERY';
-} catch {
-  console.log('[INTENT] Classification failed, defaulting to SOP_QUERY');
-  return 'SOP_QUERY';
-}
+      console.log(`[INTENT] Classified as: ${raw}`);
+      if (raw.includes('CHITCHAT')) return 'CHITCHAT';
+      if (raw.includes('CONTEXTUAL')) return 'CONTEXTUAL';
+      return 'SOP_QUERY';
+    } catch {
+      console.log('[INTENT] Classification failed, defaulting to SOP_QUERY');
+      return 'SOP_QUERY';
+    }
   }
 
   // ══════════════════════════════════════════════════════
@@ -189,7 +198,7 @@ Reply with ONE word only.`,
   private async answerChitchat(
     userQuestion: string,
     chatHistory: { role: 'user' | 'assistant'; content: string }[],
-  ): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
+  ): Promise<{ content: string; input_tokens: number; output_tokens: number, cached_input_tokens: number; }> {
     console.log('[RLM SERVICE] 💬 Handling as CHITCHAT');
 
     const recentHistory = chatHistory.slice(-2).map((m) => ({
@@ -216,7 +225,7 @@ Reply with ONE word only.`,
   private async answerContextual(
     userQuestion: string,
     chatHistory: { role: 'user' | 'assistant'; content: string }[],
-  ): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
+  ): Promise<{ content: string; input_tokens: number; output_tokens: number, cached_input_tokens: number; }> {
     const trimmedHistory = chatHistory.slice(-6).map((m) => ({
       role: m.role as 'user' | 'assistant',
       content:
@@ -284,8 +293,10 @@ Reply with ONE word only.`,
     let totalOutputTokens: number;
     let rootInputTokens = 0;
     let rootOutputTokens = 0;
+    let rootCachedInputTokens = 0;
     let subInputTokens = 0;
     let subOutputTokens = 0;
+    let subCachedInputTokens = 0;
     let totalIterations = 1;
     let rlmDepth = 1;
     let subQueryResults: any[] = [];
@@ -308,6 +319,7 @@ Reply with ONE word only.`,
       totalOutputTokens = result.output_tokens;
       rootInputTokens = result.input_tokens;
       rootOutputTokens = result.output_tokens;
+      rootCachedInputTokens = result.cached_input_tokens;
     } else if (intent === 'CONTEXTUAL') {
       const t0 = Date.now();
       const result = await this.answerContextual(userQuestion, chatHistory);
@@ -318,6 +330,7 @@ Reply with ONE word only.`,
       totalOutputTokens = result.output_tokens;
       subInputTokens = result.input_tokens;
       subOutputTokens = result.output_tokens;
+      subCachedInputTokens = result.cached_input_tokens;
     } else {
       // ── SOP_QUERY → run RLM & CONV in parallel, measure each independently ──
       const allDocuments = await this.sopDocumentsService.findAllMetadata();
@@ -388,8 +401,10 @@ Reply with ONE word only.`,
       totalOutputTokens = rlmResult.totalOutputTokens;
       rootInputTokens = rlmResult.rootInputTokens;
       rootOutputTokens = rlmResult.rootOutputTokens;
+      rootCachedInputTokens = rlmResult.rootCachedInputTokens;
       subInputTokens = rlmResult.subInputTokens;
       subOutputTokens = rlmResult.subOutputTokens;
+      subCachedInputTokens = rlmResult.subCachedInputTokens;
       totalIterations = rlmResult.totalIterations;
       rlmDepth = rlmResult.depth;
       subQueryResults = rlmResult.subQueryResults;
@@ -437,8 +452,10 @@ Reply with ONE word only.`,
         output_tokens: totalOutputTokens,
         root_input_tokens: rootInputTokens,
         root_output_tokens: rootOutputTokens,
+        root_cached_input_tokens: rootCachedInputTokens,
         sub_input_tokens: subInputTokens,
         sub_output_tokens: subOutputTokens,
+        sub_cached_input_tokens: subCachedInputTokens,
         response_time_ms: rlmResponseTimeMs,
         rlm_depth: rlmDepth,
         conv_answer: null,
@@ -459,8 +476,10 @@ Reply with ONE word only.`,
           output_tokens: convResult.output_tokens,
           root_input_tokens: convResult.input_tokens,
           root_output_tokens: convResult.output_tokens,
+          root_cached_input_tokens: convResult.cached_input_tokens ?? 0,
           sub_input_tokens: 0,
           sub_output_tokens: 0,
+          sub_cached_input_tokens: 0,
           response_time_ms: convResponseTimeMs,
           rlm_depth: 0,
           conv_answer: convResult.content || null,
@@ -491,8 +510,10 @@ Reply with ONE word only.`,
         output_tokens: totalOutputTokens,
         root_input_tokens: rootInputTokens,
         root_output_tokens: rootOutputTokens,
+        root_cached_input_tokens: rootCachedInputTokens,
         sub_input_tokens: subInputTokens,
         sub_output_tokens: subOutputTokens,
+        sub_cached_input_tokens: subCachedInputTokens,
         rlm_depth: rlmDepth,
         response_time_ms: rlmResponseTimeMs,
       },
@@ -567,16 +588,33 @@ Reply with ONE word only.`,
     const ratio = rlmTotal > 0 ? convTotal / rlmTotal : 0;
     const percentSaved =
       convTotal > 0 ? ((savings / convTotal) * 100).toFixed(1) + '%' : '0%';
+    const rlmTotalCached =
+      rlmLog.root_cached_input_tokens + rlmLog.sub_cached_input_tokens;
+    const rlmCacheHitPct =
+      rlmLog.input_tokens > 0
+        ? ((rlmTotalCached / rlmLog.input_tokens) * 100).toFixed(1) + '%'
+        : '0.0%';
+
+    const convCacheHitPct =
+      convLog.input_tokens > 0
+        ? (
+            (convLog.root_cached_input_tokens / convLog.input_tokens) *
+            100
+          ).toFixed(1) + '%'
+        : '0.0%';
 
     const rlmCost = calcTokenCost({
       root_input_tokens: rlmLog.root_input_tokens,
       root_output_tokens: rlmLog.root_output_tokens,
+      root_cached_input_tokens: rlmLog.root_cached_input_tokens,
       sub_input_tokens: rlmLog.sub_input_tokens,
       sub_output_tokens: rlmLog.sub_output_tokens,
+      sub_cached_input_tokens: rlmLog.sub_cached_input_tokens,
     });
     const convCost = calcTokenCost({
       root_input_tokens: convLog.root_input_tokens,
       root_output_tokens: convLog.root_output_tokens,
+      root_cached_input_tokens: convLog.root_cached_input_tokens,
       sub_input_tokens: 0,
       sub_output_tokens: 0,
     });
@@ -598,8 +636,11 @@ Reply with ONE word only.`,
         rlm_depth: rlmLog.rlm_depth,
         root_input_tokens: rlmLog.root_input_tokens,
         root_output_tokens: rlmLog.root_output_tokens,
+        root_cached_input_tokens: rlmLog.root_cached_input_tokens,
         sub_input_tokens: rlmLog.sub_input_tokens,
+        sub_cached_input_tokens: rlmLog.sub_cached_input_tokens,
         sub_output_tokens: rlmLog.sub_output_tokens,
+        cache_hit_rate: rlmCacheHitPct,
         response_time_ms: rlmTime,
         cost: {
           root: {
@@ -618,6 +659,8 @@ Reply with ONE word only.`,
       conv: {
         input_tokens: convLog.input_tokens,
         output_tokens: convLog.output_tokens,
+        cached_input_tokens: convLog.root_cached_input_tokens,
+        cache_hit_rate: convCacheHitPct,
         total_tokens: convTotal,
         answer: convLog.conv_answer,
         error_message: convLog.error_message,

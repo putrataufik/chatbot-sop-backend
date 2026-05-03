@@ -280,12 +280,15 @@ export class ChatService {
       const rlmCost  = calcTokenCost({
         root_input_tokens:  rlmLog.root_input_tokens,
         root_output_tokens: rlmLog.root_output_tokens,
+        root_cached_input_tokens: rlmLog.root_cached_input_tokens,
         sub_input_tokens:   rlmLog.sub_input_tokens,
         sub_output_tokens:  rlmLog.sub_output_tokens,
+        sub_cached_input_tokens:  rlmLog.sub_cached_input_tokens,
       });
       const convCost = calcTokenCost({
         root_input_tokens:  convLog.root_input_tokens,
         root_output_tokens: convLog.root_output_tokens,
+        root_cached_input_tokens: convLog.root_cached_input_tokens,
         sub_input_tokens:   0,
         sub_output_tokens:  0,
       });
@@ -315,7 +318,7 @@ export class ChatService {
           response_time_ms:   rlmTime,
           cost: {
             root: {
-              model:           'gpt-5.1',
+              model:           'gpt-5.4',
               input_cost_usd:  formatUsd(rlmCost.root.input_cost_usd),
               output_cost_usd: formatUsd(rlmCost.root.output_cost_usd),
               total_cost_usd:  formatUsd(rlmCost.root.total_cost_usd),
@@ -335,7 +338,7 @@ export class ChatService {
           total_tokens:     convTotal,
           response_time_ms: convTime,
           cost: {
-            model:           'gpt-5.1',
+            model:           'gpt-5.4',
             input_cost_usd:  formatUsd(convCost.root.input_cost_usd),
             output_cost_usd: formatUsd(convCost.root.output_cost_usd),
             total_cost_usd:  formatUsd(convCost.total_cost_usd),
@@ -364,8 +367,14 @@ export class ChatService {
     const totalSavings       = totalConvTokens - totalRlmTokens;
     const totalRlmRootInput  = rows.reduce((s, r) => s + r.rlm.root_input_tokens,  0);
     const totalRlmRootOutput = rows.reduce((s, r) => s + r.rlm.root_output_tokens, 0);
+    const totalRlmRootCached = rows.reduce((s, r) => s + (r.rlm.root_cached_input_tokens ?? 0), 0);
     const totalRlmSubInput   = rows.reduce((s, r) => s + r.rlm.sub_input_tokens,   0);
     const totalRlmSubOutput  = rows.reduce((s, r) => s + r.rlm.sub_output_tokens,  0);
+    const totalRlmSubCached  = rows.reduce((s, r) => s + (r.rlm.sub_cached_input_tokens ?? 0), 0);
+    const totalConvCached    = rows.reduce((s, r) => s + (r.conv.cached_input_tokens ?? 0), 0);
+
+    const totalRlmCacheHitPct  = totalRlmInput > 0 ? (((totalRlmRootCached + totalRlmSubCached) / totalRlmInput) * 100).toFixed(1) + '%': '0.0%';
+    const totalConvCacheHitPct = totalConvInput > 0 ? ((totalConvCached / totalConvInput) * 100).toFixed(1) + '%': '0.0%';
 
     const avgEfficiencyRatio  = rows.length > 0
       ? Math.round((rows.reduce((s, r) => s + r.efficiency.total_efficiency_ratio, 0) / rows.length) * 1000) / 1000
@@ -437,6 +446,10 @@ export class ChatService {
         avg_output_efficiency:        avgOutputEfficiency,
         avg_efficiency_ratio:         avgEfficiencyRatio,
         avg_percentage_saved:         avgPercentageSaved,
+        total_rlm_cached_input_tokens:  totalRlmRootCached + totalRlmSubCached,
+        total_conv_cached_input_tokens: totalConvCached,
+        rlm_cache_hit_rate:             totalRlmCacheHitPct,
+        conv_cache_hit_rate:            totalConvCacheHitPct,
         // Token breakdown RLM per model
         total_rlm_root_input_tokens:  totalRlmRootInput,
         total_rlm_root_output_tokens: totalRlmRootOutput,
@@ -461,7 +474,7 @@ export class ChatService {
         cost: {
           rlm: {
             root: {
-              model:           'gpt-5.1',
+              model:           'gpt-5.4',
               input_cost_usd:  formatUsd(totalRlmCost.root.input_cost_usd),
               output_cost_usd: formatUsd(totalRlmCost.root.output_cost_usd),
               total_cost_usd:  formatUsd(totalRlmCost.root.total_cost_usd),
@@ -475,7 +488,7 @@ export class ChatService {
             total_cost_usd: formatUsd(totalRlmCost.total_cost_usd),
           },
           conv: {
-            model:           'gpt-5.1',
+            model:           'gpt-5.4',
             input_cost_usd:  formatUsd(totalConvCost.root.input_cost_usd),
             output_cost_usd: formatUsd(totalConvCost.root.output_cost_usd),
             total_cost_usd:  formatUsd(totalConvCost.total_cost_usd),
