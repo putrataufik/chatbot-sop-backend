@@ -15,14 +15,14 @@ export interface RLMResult {
   answer: string;
   references: string[];
   subQueryResults: SubQueryItem[];
-  // Total gabungan (backward compat)
   totalInputTokens: number;
   totalOutputTokens: number;
-  // Breakdown per model — BARU
   rootInputTokens: number;
   rootOutputTokens: number;
+  rootCachedInputTokens: number;
   subInputTokens: number;
   subOutputTokens: number;
+  subCachedInputTokens: number;
   totalIterations: number;
   depth: number;
   execLog: string[];
@@ -64,44 +64,35 @@ export class RlmEngine {
     const references: string[] = [];
     const selectedDocumentIds: number[] = [];
 
-    // ── Token tracking dipisah per model ──────────────────
-    let rootInputTokens  = 0;  // gpt-5.1
-    let rootOutputTokens = 0;  // gpt-5.1
-    let subInputTokens   = 0;  // gpt-5-mini
-    let subOutputTokens  = 0;  // gpt-5-mini
+    let rootInputTokens = 0;
+    let rootOutputTokens = 0;
+    let rootCachedInputTokens = 0;
+    let subInputTokens = 0;
+    let subOutputTokens = 0;
+    let subCachedInputTokens = 0;
 
     let totalIterations = 0;
     let currentDepth = 1;
 
     const conversationHistory: ChatMessage[] = [
-      {
-        role: 'system',
-        content: this.buildSystemPrompt(allDocuments),
-      },
+      { role: 'system', content: this.buildSystemPrompt(allDocuments) },
       ...chatHistory,
-      {
-        role: 'user',
-        content: userQuestion,
-      },
+      { role: 'user', content: userQuestion },
     ];
 
-    // ── LOOP UTAMA ─────────────────────────────────────
+    // ── MAIN LOOP ───────────────────────────────────────
     for (let i = 0; i < this.maxIterations; i++) {
       totalIterations++;
-      console.log(
-        `\n[RLM] ── ITERASI ${i + 1}/${this.maxIterations} ──────────────────`,
-      );
+      console.log(`\n[RLM] ── ITERATION ${i + 1}/${this.maxIterations} ──`);
 
       const trimmedHistory = this.trimHistory(conversationHistory);
       const response = await this.llmApiClient.queryRootLM(trimmedHistory);
 
-      // Root LM token → gpt-5.1
-      rootInputTokens  += response.input_tokens;
+      rootInputTokens += response.input_tokens;
       rootOutputTokens += response.output_tokens;
+      rootCachedInputTokens += response.cached_input_tokens;
 
-      console.log(
-        `[RLM] 📨 GPT response preview: "${response.content.slice(0, 300)}"`,
-      );
+      console.log(`[RLM] 📨 GPT preview: "${response.content.slice(0, 200)}"`);
 
       conversationHistory.push({
         role: 'assistant',
@@ -122,10 +113,17 @@ export class RlmEngine {
         ) {
           console.log('\n[RLM] 🏁 FINAL() detected outside code block');
           return this.buildResult({
-            answer, references, subQueryResults,
-            rootInputTokens, rootOutputTokens,
-            subInputTokens, subOutputTokens,
-            totalIterations, currentDepth,
+            answer,
+            references,
+            subQueryResults,
+            rootInputTokens,
+            rootOutputTokens,
+            rootCachedInputTokens,
+            subInputTokens,
+            subOutputTokens,
+            subCachedInputTokens,
+            totalIterations,
+            currentDepth,
             selectedDocumentIds,
           });
         }
@@ -134,92 +132,83 @@ export class RlmEngine {
       if (!codeBlock && !finalMatch) {
         const plainAnswer = response.content.trim();
         if (plainAnswer.length > 200 && i > 0) {
-          console.log('[RLM] 💡 Root LM provided direct answer without FINAL()');
+          console.log('[RLM] 💡 Direct answer without FINAL()');
           return this.buildResult({
-            answer: plainAnswer, references, subQueryResults,
-            rootInputTokens, rootOutputTokens,
-            subInputTokens, subOutputTokens,
-            totalIterations, currentDepth,
+            answer: plainAnswer,
+            references,
+            subQueryResults,
+            rootInputTokens,
+            rootOutputTokens,
+            rootCachedInputTokens,
+            subInputTokens,
+            subOutputTokens,
+            subCachedInputTokens,
+            totalIterations,
+            currentDepth,
             selectedDocumentIds,
           });
         }
 
-        console.log('[RLM] ⚠️  No code block found, prompting Root LM to use REPL');
+        console.log('[RLM] ⚠️  No code block, prompting REPL');
         conversationHistory.push({
           role: 'user',
           content:
-            'Observation: Tidak ada code block. Tulis code dalam ```repl block. Jika kamu sudah tahu jawabannya, panggil FINAL(jawaban) di dalam code block.',
+            'Observation: No code block found. Write code in ```repl block, or call FINAL(answer) inside it.',
         });
         continue;
       }
 
       if (!codeBlock) {
-        console.log('[RLM] ⚠️  No code block found (FINAL was placeholder)');
+        console.log('[RLM] ⚠️  No valid code block');
         conversationHistory.push({
           role: 'user',
           content:
-            'Observation: Tidak ada code block yang valid. Tulis code dalam ```repl block.',
+            'Observation: No valid code block. Write code in ```repl block.',
         });
         continue;
       }
 
-      // ── Eksekusi di sandbox ──
+      // ── Execute in sandbox ──
       const execResult = await this.replSandbox.execute(
         codeBlock,
-        // llm_query callback → Sub LM (gpt-5-mini)
         async (prompt: string) => {
           currentDepth++;
-          console.log(`[RLM] 🔬 Sub-LM called (depth=${currentDepth})`);
+          console.log(`[RLM] 🔬 Sub-LM (depth=${currentDepth})`);
           const subResponse = await this.llmApiClient.querySubLM(
-            `Kamu adalah asisten HR yang ramah dan helpful. Jawab pertanyaan user berdasarkan dokumen SOP yang diberikan.
-
-GAYA JAWABAN:
-- Jawab seperti teman kerja yang menjelaskan prosedur — ramah, jelas, dan to the point.
-- Gunakan format Markdown agar mudah dibaca:
-  - **Bold** untuk nama jabatan, nama formulir, dan hal penting
-  - Gunakan numbered list (1. 2. 3.) untuk langkah-langkah prosedur
-  - Gunakan bullet points untuk sub-detail
-- Boleh beri pengantar singkat 1-2 kalimat sebelum masuk ke detail prosedur.
-- Jika ada kondisi if/else, jelaskan dengan natural (misal: "Kalau disetujui, lanjut ke... Tapi kalau tidak, maka...")
-
-AKURASI:
-- Semua informasi HARUS dari dokumen yang diberikan — jangan mengarang.
-- Gunakan istilah dan nomor langkah PERSIS dari dokumen.
-- Jangan menambah langkah atau prosedur yang tidak tertulis di dokumen.
-- Jika informasi yang ditanyakan tidak ada di dokumen, jawab dengan sopan bahwa informasi tersebut tidak tercantum dalam SOP yang tersedia.`,
+            this.buildSubLMSystemPrompt(),
             prompt,
           );
 
-          // Sub LM token → gpt-5-mini
-          subInputTokens  += subResponse.input_tokens;
+          subInputTokens += subResponse.input_tokens;
           subOutputTokens += subResponse.output_tokens;
+          subCachedInputTokens += subResponse.cached_input_tokens;
 
           subQueryResults.push({
             subQuestion: prompt.slice(0, 200),
-            answer:      subResponse.content,
-            tokensUsed:  subResponse.input_tokens + subResponse.output_tokens,
-            depth:       currentDepth,
+            answer: subResponse.content,
+            tokensUsed: subResponse.input_tokens + subResponse.output_tokens,
+            depth: currentDepth,
           });
           return subResponse.content;
         },
-        // load_document callback
         async (id: number) => {
           console.log(`[RLM] 📂 Loading document id=${id}`);
-          const content    = await loadDocumentFn(id);
+          const content = await loadDocumentFn(id);
           const normalized = this.normalizeDocument(content);
           if (!selectedDocumentIds.includes(id)) {
             selectedDocumentIds.push(id);
           }
           repl.loadDocument(normalized);
-          console.log(
-            `[RLM] ✅ Document ${id} loaded & normalized: ${normalized.length} chars`,
-          );
+          console.log(`[RLM] ✅ Loaded id=${id}: ${normalized.length} chars`);
           return normalized;
         },
       );
 
-      console.log('[RLM] 📤 execResult.finalAnswer:', execResult.finalAnswer?.slice(0, 200));
-      console.log('[RLM] 📤 execResult.error:', execResult.error);
+      console.log(
+        '[RLM] 📤 finalAnswer:',
+        execResult.finalAnswer?.slice(0, 200),
+      );
+      console.log('[RLM] 📤 error:', execResult.error);
 
       if (execResult.finalAnswer) {
         const answer = execResult.finalAnswer.trim();
@@ -228,23 +217,30 @@ AKURASI:
           conversationHistory.push({
             role: 'user',
             content:
-              'Observation: FINAL() mengandung placeholder. Pastikan llm_query() dipanggil dengan benar dan hasilnya di-assign ke variabel sebelum FINAL().',
+              'Observation: FINAL() contains an unresolved placeholder. Make sure llm_query() is awaited and assigned to a variable before FINAL().',
           });
           continue;
         }
 
-        console.log('\n[RLM] 🏁 FINAL() called inside code → selesai');
+        console.log('\n[RLM] 🏁 FINAL() called → done');
         return this.buildResult({
-          answer, references, subQueryResults,
-          rootInputTokens, rootOutputTokens,
-          subInputTokens, subOutputTokens,
-          totalIterations, currentDepth,
+          answer,
+          references,
+          subQueryResults,
+          rootInputTokens,
+          rootOutputTokens,
+          rootCachedInputTokens,
+          subInputTokens,
+          subOutputTokens,
+          subCachedInputTokens,
+          totalIterations,
+          currentDepth,
           selectedDocumentIds,
         });
       }
 
       const observation = this.buildObservation(execResult);
-      console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 300)}..."`);
+      console.log(`[RLM] 👁️  Observation: "${observation.slice(0, 200)}..."`);
       conversationHistory.push({
         role: 'user',
         content: `Observation:\n${observation}`,
@@ -252,27 +248,36 @@ AKURASI:
     }
 
     // ── Fallback ──
-    console.log('\n[RLM] ⚠️  Max iterasi tercapai');
+    console.log('\n[RLM] ⚠️  Max iterations reached');
     const fallback = await this.buildFallbackAnswer(
       userQuestion,
       subQueryResults,
       repl,
     );
 
-    // Fallback juga pakai Root LM
-    rootInputTokens  += fallback.inputTokens;
+    rootInputTokens += fallback.inputTokens;
     rootOutputTokens += fallback.outputTokens;
+    rootCachedInputTokens += fallback.cachedInputTokens;
 
     return this.buildResult({
-      answer: fallback.answer, references, subQueryResults,
-      rootInputTokens, rootOutputTokens,
-      subInputTokens, subOutputTokens,
-      totalIterations, currentDepth,
+      answer: fallback.answer,
+      references,
+      subQueryResults,
+      rootInputTokens,
+      rootOutputTokens,
+      rootCachedInputTokens,
+      subInputTokens,
+      subOutputTokens,
+      subCachedInputTokens,
+      totalIterations,
+      currentDepth,
       selectedDocumentIds,
     });
   }
 
-  // ── Helper: bangun RLMResult ───────────────────────────
+  // ══════════════════════════════════════════════════════
+  // RESULT BUILDER
+  // ══════════════════════════════════════════════════════
 
   private buildResult(params: {
     answer: string;
@@ -280,39 +285,49 @@ AKURASI:
     subQueryResults: SubQueryItem[];
     rootInputTokens: number;
     rootOutputTokens: number;
+    rootCachedInputTokens: number;
     subInputTokens: number;
     subOutputTokens: number;
+    subCachedInputTokens: number;
     totalIterations: number;
     currentDepth: number;
     selectedDocumentIds: number[];
   }): RLMResult {
-    const totalInputTokens  = params.rootInputTokens  + params.subInputTokens;
+    const totalInputTokens = params.rootInputTokens + params.subInputTokens;
     const totalOutputTokens = params.rootOutputTokens + params.subOutputTokens;
+    const totalCached =
+      params.rootCachedInputTokens + params.subCachedInputTokens;
+    const cacheHitPct =
+      totalInputTokens > 0
+        ? ((totalCached / totalInputTokens) * 100).toFixed(1)
+        : '0.0';
 
     console.log(
-      `[RLM] 📊 Token breakdown → Root: in=${params.rootInputTokens} out=${params.rootOutputTokens} | Sub: in=${params.subInputTokens} out=${params.subOutputTokens}`,
+      `[RLM] 📊 Tokens → Root: in=${params.rootInputTokens} (cached: ${params.rootCachedInputTokens}) out=${params.rootOutputTokens} | Sub: in=${params.subInputTokens} (cached: ${params.subCachedInputTokens}) out=${params.subOutputTokens} | Cache hit: ${cacheHitPct}%`,
     );
 
     return {
-      answer:            params.answer,
-      references:        params.references,
-      subQueryResults:   params.subQueryResults,
+      answer: params.answer,
+      references: params.references,
+      subQueryResults: params.subQueryResults,
       totalInputTokens,
       totalOutputTokens,
-      rootInputTokens:   params.rootInputTokens,
-      rootOutputTokens:  params.rootOutputTokens,
-      subInputTokens:    params.subInputTokens,
-      subOutputTokens:   params.subOutputTokens,
-      totalIterations:   params.totalIterations,
-      depth:             params.currentDepth,
-      execLog:           this.replSandbox.getExecLog(),
+      rootInputTokens: params.rootInputTokens,
+      rootOutputTokens: params.rootOutputTokens,
+      rootCachedInputTokens: params.rootCachedInputTokens,
+      subInputTokens: params.subInputTokens,
+      subOutputTokens: params.subOutputTokens,
+      subCachedInputTokens: params.subCachedInputTokens,
+      totalIterations: params.totalIterations,
+      depth: params.currentDepth,
+      execLog: this.replSandbox.getExecLog(),
       selectedDocumentIds: params.selectedDocumentIds,
     };
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
   // OBSERVATION BUILDER
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
 
   private buildObservation(execResult: {
     output: string;
@@ -324,14 +339,14 @@ AKURASI:
     let obs = '';
 
     if (execResult.loadedDocumentIds.length > 0) {
-      obs += `Dokumen berhasil diload: id=[${execResult.loadedDocumentIds.join(', ')}]. Context sekarang tersedia di variabel \`context\`.\n`;
-      obs += `PENTING: Di iterasi berikutnya, \`context\` sudah berisi dokumen yang di-load. Kamu TIDAK perlu memanggil load_document() lagi.\n\n`;
+      obs += `Documents loaded: id=[${execResult.loadedDocumentIds.join(', ')}]. The variable \`context\` now holds the RRF content.\n`;
+      obs += `IMPORTANT: In the next iteration, \`context\` already has the document. Do NOT call load_document() again.\n\n`;
     }
 
     if (execResult.output) {
       const truncated =
         execResult.output.length > 3000
-          ? execResult.output.slice(0, 3000) + '\n... [output dipotong]'
+          ? execResult.output.slice(0, 3000) + '\n... [output truncated]'
           : execResult.output;
       obs += `Output:\n${truncated}`;
     }
@@ -341,113 +356,158 @@ AKURASI:
     }
 
     if (execResult.llmQueryCalls.length > 0) {
-      obs += `\n\n${execResult.llmQueryCalls.length} llm_query() telah dieksekusi. Hasilnya sudah tersedia.`;
+      obs += `\n\n${execResult.llmQueryCalls.length} llm_query() executed. Results are available.`;
     }
 
     if (!obs.trim()) {
-      obs = 'Code berhasil dieksekusi tanpa output. Lanjutkan atau panggil FINAL() dengan jawaban.';
+      obs = 'Code executed with no output. Continue, or call FINAL(answer).';
     }
 
     return obs;
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SYSTEM PROMPT
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
+  // SYSTEM PROMPT — Ringkas & RRF-aware
+  // ══════════════════════════════════════════════════════
 
   private buildSystemPrompt(allDocuments: DocumentMeta[]): string {
     const docList = allDocuments
-      .map((d) => `  - id:${d.id} | "${d.title}" | ${d.file_size} bytes`)
+      .map((d) => `  - id:${d.id} | "${d.title}"`)
       .join('\n');
 
-    return `Kamu adalah asisten cerdas untuk menjawab pertanyaan tentang
-Standar Operasional Prosedur (SOP).
+    return `You answer questions about SOP documents stored in RRF format with tags [DOC], [META], [SEC], [STEP], [INFO]. Each block has fields like actor, action, time, cond, form, note.
 
-=== DOKUMEN TERSEDIA ===
+=== AVAILABLE DOCUMENTS ===
 ${docList}
-========================
 
-=== CARA KERJA ===
-1. Pilih dokumen yang relevan dengan pertanyaan
-2. Load dokumen dengan load_document(id)
-3. Filter context dengan keyword/regex — ambil bagian yang relevan saja
-4. Analisis dengan llm_query() menggunakan context yang sudah difilter
-5. Berikan jawaban dengan FINAL()
+=== ABSOLUTE RULES ===
+- NEVER answer from prior knowledge. The document is the ONLY source.
+- ALWAYS start with \`\`\`repl block + load_document(id). No exceptions.
+- One \`\`\`repl block per response. Always finish with FINAL(answer).
+- Reply in the SAME language as the user's question.
 
-=== FUNGSI TERSEDIA ===
-- \`await load_document(id)\` → load dokumen ke context (WAJIB pakai await)
-- \`context\`                → isi dokumen setelah load_document() dipanggil
-- \`document_list\`          → array metadata semua dokumen
-- \`print(...)\`             → tampilkan output
-- \`await llm_query(prompt)\`→ analisis semantik dengan Sub-LM (WAJIB pakai await)
-- \`re.search(pat, text)\`   → regex search (return boolean)
-- \`re.findall(pat, text)\`  → regex findall (return array)
-- \`FINAL(jawaban)\`         → berikan jawaban akhir
+=== TOOLS ===
+- await load_document(id), context, await llm_query(prompt), print(...), FINAL(answer)
 
-=== ATURAN PENTING ===
-- Gunakan JavaScript karena sistem ini menjalankan code di sandbox JavaScript.
-- WAJIB pakai \`await\` untuk load_document() dan llm_query()
-- WAJIB panggil load_document() sebelum mengakses context
-- SATU code block per respons (gunakan \`\`\`repl)
-- WAJIB panggil FINAL() setelah mendapat jawaban
-- JANGAN jawab dari pengetahuan umum — HANYA dari isi dokumen
-- Gunakan istilah dan nomor langkah PERSIS dari dokumen
+=== FILTERING STRATEGY ===
 
-=== ATURAN EFISIENSI TOKEN ===
-- JANGAN kirim seluruh context ke llm_query — sangat boros token
-- WAJIB filter context dengan keyword/regex sebelum llm_query
-- Kirim HANYA baris/paragraf yang relevan dengan pertanyaan (maks 5000 karakter)
-- Jika hasil filter kosong, perluas keyword atau ambil paragraf yang paling dekat
-- Sertakan sedikit konteks sekitar (2-3 baris sebelum/sesudah) agar jawaban tidak terputus
+Step 1 — Classify question type from these signals:
+  • TIME question → contains: "when", "how long", "what time", "duration", "deadline", "berapa lama", "kapan"
+  • PROCEDURAL → contains: "how to", "steps", "process", "procedure", "who does", "responsible for"
+  • DESCRIPTIVE → contains: "what is", "what are", "list", "key", "define", "describe"
+  • SPECIFIC-VALUE → asking for a number/size/code (e.g. "optimum size", "doc number")
 
-=== CONTOH LENGKAP ===
+Step 2 — Build snippet with these tactics (combine as needed):
+  A. SENTENCE-LEVEL EXTRACTION (use for SPECIFIC-VALUE and TIME questions):
+     Split context into sentences. Keep sentences containing question keywords + nearby context (±2 sentences).
+  B. BLOCK FILTER BY KEYWORD:
+     Split into blocks. Keep blocks where ANY question keyword appears.
+  C. SECTION MATCH:
+     If a [SEC] title contains a question noun, take that [SEC] + all blocks where sec=<title>.
+  D. ALL [INFO]+[META]:
+     Last resort for descriptive questions when other tactics yield <100 chars.
+
+Step 3 — Hard size cap: snippet MUST be ≤ 15,000 chars before sending to llm_query.
+  If snippet exceeds 15,000:
+    • For TIME questions: keep only blocks containing time-pattern regex /\\d+\\s*(min|hour|hr|jam|menit|day|hari|am|pm|a\\.m|p\\.m)/i
+    • For others: re-filter with stricter (longer) keywords from the question
+  If still > 15,000 after re-filter, take first 15,000 chars but log a warning.
+
+=== EXAMPLE: TIME / SPECIFIC-VALUE QUESTION ===
 \`\`\`repl
-// Step 1: Load dokumen
-await load_document(4)
+await load_document(46)
+const blocks = context.split(/\\n(?=\\[)/).filter(b => b.trim())
 
-// Step 2: Filter context — ambil bagian yang relevan saja
-const lines = context.split('\\n')
-const keywords = ['biro perencanaan', 'kepala biro', 'perencanaan']
-const relevantIndices = new Set()
-lines.forEach((line, i) => {
-  if (keywords.some(kw => line.toLowerCase().includes(kw.toLowerCase()))) {
-    for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) {
-      relevantIndices.add(j)
-    }
+const q = "PUT_USER_QUESTION_HERE".toLowerCase()
+const stop = new Set(['what','who','when','where','how','why','is','are','the','a','an','of','in','for','to','and','or','do','does','should','typically','responsible','found','before','their','much','long','time','many','given'])
+const kws = q.split(/\\W+/).filter(w => w.length > 3 && !stop.has(w))
+
+// Tactic A: sentence-level for time/specific-value
+const isTimeQ = /\\b(when|how long|time|duration|long|deadline|kapan|berapa lama)\\b/i.test(q)
+
+// First filter blocks by keyword
+let candidates = blocks.filter(b => kws.some(k => b.toLowerCase().includes(k)))
+if (candidates.length === 0) candidates = blocks  // fallback to all
+
+// For time questions, prioritize blocks containing time patterns
+if (isTimeQ) {
+  const timeRx = /\\d+\\s*(min|hour|hr|jam|menit|day|hari|am|pm|a\\.m|p\\.m|second)/i
+  const withTime = candidates.filter(b => timeRx.test(b))
+  if (withTime.length > 0) candidates = withTime
+}
+
+let snippet = candidates.join('\\n\\n')
+print('Candidates:', candidates.length, '| length:', snippet.length)
+
+// Hard cap at 15K
+if (snippet.length > 15000) {
+  // Stricter: blocks containing AT LEAST 2 keywords
+  const stricter = candidates.filter(b => {
+    const lower = b.toLowerCase()
+    return kws.filter(k => lower.includes(k)).length >= 2
+  })
+  if (stricter.length > 0 && stricter.join('\\n\\n').length < snippet.length) {
+    snippet = stricter.join('\\n\\n')
+    print('Stricter applied:', snippet.length)
   }
-})
-const filteredContext = [...relevantIndices].sort((a, b) => a - b).map(i => lines[i]).join('\\n')
-const contextToSend = filteredContext.length > 200
-  ? filteredContext.slice(0, 5000)
-  : context.slice(0, 5000)
+  if (snippet.length > 15000) {
+    snippet = snippet.slice(0, 15000)
+    print('Hard cap to 15000')
+  }
+}
 
-print('Filtered context length:', contextToSend.length)
-
-// Step 3: Analisis dengan Sub-LM
 const result = await llm_query(\`
-Berdasarkan dokumen SOP di bawah, jawab pertanyaan user.
-Dokumen SOP (bagian relevan): \${contextToSend}
-Pertanyaan: [pertanyaan user]
-\`)
+Answer the user's question using ONLY the SOP excerpt below.
+Quote exact role names, step IDs, durations, form names, and times verbatim.
+For time/value questions, find the EXACT figure in the excerpt — do not approximate.
+If you cannot find the answer, say "Not specified in the document".
 
+SOP excerpt:
+\${snippet}
+
+Question: PUT_USER_QUESTION_HERE
+\`)
 FINAL(result)
-\`\`\``;
+\`\`\`
+
+=== EXAMPLE: DESCRIPTIVE QUESTION ===
+Same skeleton, but skip the time-pattern step and add fallback:
+\`if (snippet.length < 100) snippet = blocks.filter(b => b.startsWith('[INFO]') || b.startsWith('[META]')).join('\\n\\n')\``;
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
+  // SUB-LM SYSTEM PROMPT — singkat
+  // ══════════════════════════════════════════════════════
+
+  private buildSubLMSystemPrompt(): string {
+    return `You are an assistant answering questions about a document. Use ONLY the snippet provided in the user prompt.
+
+READING METHOD (CRITICAL):
+- Read EVERY block in the snippet carefully, including narrative paragraphs inside [INFO] blocks.
+- The answer may be a single sentence buried in a paragraph. Look for it directly — do not assume it must be in a structured list.
+- If the question asks "what are X" or "list X", and the snippet contains a sentence like "X are A, B, C, and D", that IS the answer. Extract it.
+
+COMPLETENESS:
+- For procedural questions: list EVERY relevant [STEP] in order. Include actor, action, time, condition.
+- For descriptive questions: extract the exact information from [INFO] paragraphs.
+
+FORMAT:
+- Reply in the SAME language as the user's question.
+- Use Markdown: **bold** for key terms, numbered lists for steps, bullets for items.
+
+ACCURACY:
+- Quote names, IDs, durations, and form names EXACTLY as written.
+- Only say "the document does not specify" if you have read EVERY block and the information truly is not there. Be very reluctant to give this answer.
+- Do NOT invent content not in the snippet.`;
+  }
+
+  // ══════════════════════════════════════════════════════
   // HELPERS
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
 
   private normalizeDocument(content: string): string {
-    return content
-      .replace(/(\d{4},\s*No\.\d+\s+\d+\s)/g, '\n\n$1')
-      .replace(/(\s{2,}\d+\.\s{2,})/g, '\n$1')
-      .replace(/(\s{2,}[a-z]\.\s{2,})/g, '\n$1')
-      .replace(/(BAB\s+[IVX]+\s)/g, '\n\n$1')
-      .replace(/([.!?])\s{2,}/g, '$1\n')
-      .replace(/\s{3,}/g, '  ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    // RRF is already structured. Only do minimal cleanup.
+    return content.replace(/\n{3,}/g, '\n\n').trim();
   }
 
   private extractCodeBlock(content: string): string | null {
@@ -464,9 +524,11 @@ FINAL(result)
   ): ChatMessage[] {
     if (history.length <= maxMessages) return history;
     const systemPrompt = history[0];
-    const firstUser    = history[1];
-    const recent       = history.slice(-(maxMessages - 2));
-    console.log(`[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`);
+    const firstUser = history[1];
+    const recent = history.slice(-(maxMessages - 2));
+    console.log(
+      `[RLM] ✂️  History trimmed: ${history.length} → ${recent.length + 2}`,
+    );
     return [systemPrompt, firstUser, ...recent];
   }
 
@@ -474,46 +536,58 @@ FINAL(result)
     originalQuestion: string,
     subQueryResults: SubQueryItem[],
     repl: ReplEnvironment,
-  ): Promise<{ answer: string; inputTokens: number; outputTokens: number }> {
+  ): Promise<{
+    answer: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+  }> {
     const keywords = originalQuestion
       .toLowerCase()
       .split(/\s+/)
       .filter((w) => w.length > 3);
     const lines = repl.getDocument().split('\n');
-    const hits  = lines
+    const hits = lines
       .filter((l) => keywords.some((kw) => l.toLowerCase().includes(kw)))
       .sort((a, b) => b.length - a.length)
       .slice(0, 20)
       .join('\n');
 
     const validSubAnswers = subQueryResults
-      .filter((r) => !r.answer.includes('Tidak tersedia'))
-      .map((r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nJawaban: ${r.answer}`)
+      .filter(
+        (r) =>
+          !r.answer.includes('Tidak tersedia') &&
+          !r.answer.includes('not available'),
+      )
+      .map(
+        (r, i) => `Sub-query ${i + 1}: ${r.subQuestion}\nAnswer: ${r.answer}`,
+      )
       .join('\n\n---\n\n');
 
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `Kamu adalah asisten yang ramah. Jawab berdasarkan dokumen SOP yang diberikan.
-Gunakan format Markdown dan gaya conversational yang natural.
-Gunakan istilah dan nomor langkah persis dari dokumen. Jangan mengarang.`,
+        content: `You are a friendly HR assistant. Answer the user's question based on the SOP excerpt provided.
+Reply in the SAME language as the user's question. Use Markdown.
+Keep step IDs and role names exactly as written. Do not invent.`,
       },
       {
         role: 'user',
-        content: `Pertanyaan: "${originalQuestion}"
-${validSubAnswers ? `\nHasil analisis sebelumnya:\n${validSubAnswers}\n\n` : ''}
-Kutipan dari dokumen SOP:
-${hits || 'Tidak ditemukan kutipan relevan'}
+        content: `Question: "${originalQuestion}"
+${validSubAnswers ? `\nPrevious analysis:\n${validSubAnswers}\n\n` : ''}
+SOP excerpt:
+${hits || 'No relevant excerpt found.'}
 
-Jawab pertanyaan berdasarkan kutipan di atas.`,
+Answer based on the excerpt above.`,
       },
     ];
 
     const response = await this.llmApiClient.queryRootLM(messages);
     return {
-      answer:       response.content,
-      inputTokens:  response.input_tokens,
+      answer: response.content,
+      inputTokens: response.input_tokens,
       outputTokens: response.output_tokens,
+      cachedInputTokens: response.cached_input_tokens,
     };
   }
 }

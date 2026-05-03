@@ -1,4 +1,7 @@
 // FILE: src/modules/rlm/conventional.service.ts
+//
+// Conventional baseline — kirim semua dokumen sekaligus ke model sebagai context
+// Language: jawab dalam bahasa yang sama dengan user's question
 
 import { Injectable } from '@nestjs/common';
 import { LlmApiClient, ChatMessage } from './llm-api.client';
@@ -8,6 +11,7 @@ export interface ConventionalResult {
   content: string;
   input_tokens: number;
   output_tokens: number;
+  cached_input_tokens: number;
   error_message: string | null;
 }
 
@@ -20,63 +24,71 @@ export class ConventionalService {
 
   async process(
     userQuestion: string,
-    chatHistory: { role: 'user' | 'assistant'; content: string }[],
+    chatHistory: { role: string; content: string }[],
   ): Promise<ConventionalResult> {
-    console.log('\n[CONV] 🏛️ Starting conventional processing...');
-
-    const allDocs = await this.sopDocumentsService.findAllWithContent();
-    console.log(`[CONV] 📚 Loaded ${allDocs.length} documents for context`);
-
-    const fullContext = allDocs
-      .map((doc) => `=== ${doc.title} ===\n${doc.content}`)
-      .join('\n\n');
-
-    const trimmedHistory = chatHistory.slice(-4).map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content:
-        m.role === 'assistant'
-          ? m.content.slice(0, 1000) +
-            (m.content.length > 1000 ? '\n...[dipotong]' : '')
-          : m.content,
-    }));
-
-    const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content: `Kamu adalah asisten HR bernama SOP Intellect. Jawab pertanyaan berdasarkan dokumen SOP berikut:\n\n${fullContext}\n\nJawab dengan lengkap dan akurat menggunakan Markdown. Kutip judul dokumen yang relevan.`,
-      },
-      ...trimmedHistory,
-      { role: 'user', content: userQuestion },
-    ];
+    console.log('[CONV] 🏛️ Starting conventional processing...');
 
     try {
-      const result = await this.llmApiClient.queryConvLM(messages);
-      console.log(
-        `[CONV] ✅ Done. Tokens: input=${result.input_tokens}, output=${result.output_tokens}`,
-      );
+      // Load semua dokumen dengan content
+      const docs = await this.sopDocumentsService.findAllWithContent();
+      console.log(`[CONV] 📚 Loaded ${docs.length} documents for context`);
+
+      // Gabung semua dokumen sebagai context
+      const fullContext = docs
+        .map((d) => `=== ${d.title} ===\n${d.content}`)
+        .join('\n\n');
+
+      const messages: ChatMessage[] = [
+        {
+          role: 'system',
+          content: `You are a helpful HR assistant named SOP Intellect. Answer questions based solely on the SOP documents provided.
+
+LANGUAGE RULE (CRITICAL):
+- Detect the language of the user's question.
+- Answer in the SAME language as the user's question.
+- English question → English answer.
+- Indonesian question → Indonesian answer.
+- The SOP documents may be in a different language — read them in their original language but answer in the user's language.
+
+ANSWER STYLE:
+- Be friendly, conversational, and direct.
+- The user has NO direct access to the SOP documents — YOU are their only source of information.
+- Never tell the user to "check the document", "refer to the SOP", or "look it up themselves" — provide the complete answer.
+- Use Markdown (bold for key terms, numbered lists for steps).
+- Include ALL numeric values, durations, and time limits EXACTLY as written in the document.
+- If information is not in the documents, say so politely — do NOT suggest checking elsewhere.
+
+SOP DOCUMENTS:
+${fullContext}`,
+        },
+        ...chatHistory.map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+        {
+          role: 'user' as const,
+          content: userQuestion,
+        },
+      ];
+
+      const response = await this.llmApiClient.queryRootLM(messages);
+      console.log(`[CONV] ✅ Done. Tokens: input=${response.input_tokens}, output=${response.output_tokens}`);
+
       return {
-        content: result.content,
-        input_tokens: result.input_tokens,
-        output_tokens: result.output_tokens,
+        content:       response.content,
+        input_tokens:  response.input_tokens,
+        output_tokens: response.output_tokens,
+        cached_input_tokens: response.cached_input_tokens,
         error_message: null,
       };
     } catch (err: any) {
-      // Jika gagal (misal context overflow), estimasi token dan simpan error
-      const estimatedInputTokens = this.llmApiClient.estimateTokens(
-        messages.map((m) => m.content).join(' '),
-      );
-      const errorMsg: string =
-        (err?.response?.data?.error?.message as string | undefined) ??
-        (err?.message as string | undefined) ??
-        'Unknown error';
-      console.error(`[CONV] ❌ Error: ${errorMsg}`);
-      console.log(`[CONV] 📊 Estimated input tokens: ${estimatedInputTokens}`);
-
+      console.error('[CONV] ❌ Error:', err.message);
       return {
-        content: '',
-        input_tokens: estimatedInputTokens,
+        content:       '',
+        input_tokens:  0,
         output_tokens: 0,
-        error_message: errorMsg,
+        cached_input_tokens: 0,
+        error_message: err.message,
       };
     }
   }

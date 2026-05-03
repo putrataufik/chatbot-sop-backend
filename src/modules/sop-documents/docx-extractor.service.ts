@@ -1,11 +1,5 @@
 // FILE: src/modules/sop-documents/pdf-extractor.service.ts
-//
-// PDF Extractor v8 — PDF langsung ke LLM
-//
-// - Prompt general untuk segala bentuk SOP/dokumen prosedur
-// - Full error logging dari OpenAI API
-// - Support: tabel prosedur, flowchart, swim-lane, narrative
-// - Output format cocok untuk RLM (Langkah X. [Actor] Isi)
+// PDF Extractor v11 — RRF v2: ringkas, general, language-preserving
 
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -20,8 +14,7 @@ export class PdfExtractorService {
 
   constructor(private configService: ConfigService) {
     this.apiKey = this.configService.get<string>('OPENAI_API_KEY') as string;
-    this.model =
-      this.configService.get<string>('OPENAI_MODEL') ?? 'gpt-4o-mini';
+    this.model  = this.configService.get<string>('OPENAI_MODEL') ?? 'gpt-4o-mini';
   }
 
   async extract(pdfBuffer: Buffer): Promise<string> {
@@ -29,66 +22,78 @@ export class PdfExtractorService {
       throw new BadRequestException('File PDF kosong atau terlalu kecil');
     }
 
-    this.logger.log(
-      `[EXTRACT] PDF size: ${pdfBuffer.length} bytes, model: ${this.model}`,
-    );
+    this.logger.log(`[EXTRACT] PDF size: ${pdfBuffer.length} bytes, model: ${this.model}`);
 
     const base64Pdf = pdfBuffer.toString('base64');
 
-    const systemPrompt = `Kamu adalah document parser. Tugasmu mengkonversi dokumen PDF menjadi plain text terstruktur.
+    const systemPrompt = `Convert SOP documents into RRF (RLM-Ready Format). RRF is a structured tag-based format for reliable retrieval.
 
-ATURAN UMUM:
-- Salin SEMUA informasi dari dokumen. Jangan tambah, jangan kurangi, jangan ubah istilah.
-- Output dalam plain text (bukan markdown, bukan HTML).
-- Gunakan bahasa yang sama dengan dokumen asli.
+═══ RRF SCHEMA ═══
 
-FORMAT OUTPUT:
+[DOC] title=<title> | lang=<en|id|other>
 
-1. HEADER DOKUMEN
-   Tulis metadata dokumen apa adanya (nomor dokumen, tanggal berlaku, revisi, departemen, judul, dsb).
+[META] field=<name> | value=<value>
+(repeat for each metadata: doc number, date, revision, department, etc.)
 
-2. BAGIAN DESKRIPTIF
-   Tulis section seperti Tujuan, Cakupan, Definisi, Dokumen/Formulir, Kebijakan, dsb dengan penomoran asli dari dokumen.
+[SEC] id=<id> | title=<section title>
+(one per section/chapter; omit if document has no sections)
 
-3. BAGIAN PROSEDUR / RINCIAN PROSEDUR
-   Ini bagian terpenting. Format setiap langkah sebagai:
+[INFO] type=<purpose|scope|definition|policy|other> | sec=<section title or empty>
+<verbatim content>
+[/INFO]
 
-   Langkah [nomor]. [Penanggung Jawab] Isi kegiatan lengkap.
+[STEP] id=<step id> | sec=<section title or empty>
+actor: <primary role> | <alternate role or empty>
+action: <verbatim activity description, including sub-points and forms>
+time: <duration verbatim, e.g. "4-6 minutes", "24 jam", "Within 30 min">
+cond: <if/else or yes/no branches, or empty>
+form: <form name, or empty>
+note: <compliance/SLA/extra notes, or empty>
+[/STEP]
 
-   Aturan khusus:
-   a) NOMOR LANGKAH: gunakan penomoran persis dari dokumen.
-      - Jika dokumen pakai 5.1, 5.2, dst → tulis "Langkah 5.1.", "Langkah 5.2."
-      - Jika dokumen pakai 1, 2, 3 → tulis "Langkah 1.", "Langkah 2."
-      - Jika dokumen tidak punya nomor (misal flowchart) → beri nomor urut sendiri: "Langkah 1.", "Langkah 2.", dst
+═══ RULES ═══
 
-   b) PENANGGUNG JAWAB / ACTOR: tulis dalam [kurung siku] persis dari dokumen.
-      - Ambil dari kolom "Tanggung Jawab", "Pelaksana", "PIC", atau kolom serupa
-      - Jika ada beberapa actor untuk satu langkah, pisahkan dengan koma: [Manager Langsung, HRD, DirOps]
-      - Jika tidak ada actor yang tercantum untuk suatu langkah, tulis [] (kurung siku kosong)
-      - PENTING: pasangkan setiap kegiatan dengan actor yang benar PADA BARIS YANG SAMA di tabel asli
+1. COMPLETENESS — output every step, actor, time, condition, form. Omit nothing meaningful.
+2. VERBATIM — copy values exactly. Keep IDs ("STEP-3.c"), durations ("4-6 minutes"), role names ("Concerned Physician") unchanged.
+3. LANGUAGE — preserve the document's original language. Do NOT translate. Tag names (DOC, STEP, etc.) stay in English.
+4. ORDER — preserve original step/section order.
+5. OMIT only: page numbers, headers/footers, decorative shapes, "Begin"/"End" terminals.
+6. FIELDS — if a field is absent, write empty value (e.g. "form: "). Never invent.
+7. MULTI-VALUE TIME — join with " | " (e.g. "time: Next day | Within 6 hours").
 
-   c) ISI KEGIATAN: salin lengkap termasuk:
-      - Kondisi if/else (Jika disetujui... Jika tidak...)
-      - Sub-poin (5.1.1, 5.1.2, dst) — gabungkan dalam langkah induknya
-      - Nama formulir, nama jabatan, referensi ke langkah lain (misal "kembali ke point 5.6")
+═══ MINIMAL EXAMPLE ═══
 
-4. JENIS DOKUMEN YANG BISA MUNCUL:
-   a) Tabel prosedur standar: kolom No, Kegiatan, Tanggung Jawab
-   b) Flowchart / swim-lane diagram: ada shape (kotak, diamond), garis, Begin/End
-      → Abaikan elemen visual (garis, kotak, Begin, End, Ya, Tidak sebagai label shape)
-      → Ambil ISI teks dari shape dan actor dari kolom/swimlane
-   c) Dokumen naratif: prosedur ditulis dalam paragraf
-      → Identifikasi langkah-langkah dan actor dari konteks kalimat
-   d) Tabel dengan format custom / tidak standar
-      → Identifikasi kolom mana yang berisi kegiatan dan mana yang berisi penanggung jawab
-      → Jika ragu, tulis semua informasi yang ada
+[DOC] title=Customer Complaint Handling | lang=en
+[META] field=Doc No | value=SOP-CS-001
+[META] field=Revision | value=2
 
-5. JANGAN:
-   - Menambah langkah yang tidak ada di dokumen
-   - Mengubah nama jabatan (misal "Mgr DYM" jangan jadi "Manager DYM")
-   - Mengubah nama formulir (misal "FPKMP" jangan jadi "Form Penilaian Karyawan")
-   - Menambah penjelasan atau interpretasi sendiri
-   - Meringkas atau memparafrase isi langkah`;
+[SEC] id=1 | title=Intake
+
+[INFO] type=purpose | sec=Intake
+Ensure every customer complaint is logged within one business day.
+[/INFO]
+
+[STEP] id=1.1 | sec=Intake
+actor: Front Desk Officer | Supervisor
+action: Receive complaint via phone, email, or in-person. Fill Form CC-01 with complainant name, contact, and complaint summary.
+time: Within 15 minutes
+cond: 
+form: CC-01
+note: 
+[/STEP]
+
+[STEP] id=1.2 | sec=Intake
+actor: Supervisor | 
+action: Review and categorize complaint as Minor, Major, or Critical.
+time: Within 1 hour
+cond: If Critical -> escalate to Manager immediately. If Minor/Major -> assign to handler.
+form: 
+note: 
+[/STEP]
+
+═══
+
+Now convert the provided document. Output ONLY the RRF — no preamble, no markdown fences.`;
 
     try {
       const response = await axios.post(
@@ -109,7 +114,7 @@ FORMAT OUTPUT:
                 },
                 {
                   type: 'text',
-                  text: 'Konversi dokumen PDF di atas menjadi plain text terstruktur sesuai instruksi.',
+                  text: 'Convert this SOP into RRF. Include every step, actor, time, condition, and form. Preserve original language and order. Output RRF only.',
                 },
               ],
             },
@@ -124,21 +129,15 @@ FORMAT OUTPUT:
         },
       );
 
-      const result = response.data.choices[0]?.message?.content ?? '';
-      const tokens = response.data.usage;
+      const result       = response.data.choices[0]?.message?.content ?? '';
+      const tokens       = response.data.usage;
       const finishReason = response.data.choices[0]?.finish_reason;
 
-      this.logger.log(`[EXTRACT] ✅ Model: ${this.model}`);
-      this.logger.log(
-        `[EXTRACT] ✅ Tokens — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`,
-      );
-      this.logger.log(`[EXTRACT] ✅ Finish reason: ${finishReason}`);
-      this.logger.log(`[EXTRACT] ✅ Result length: ${result.length} chars`);
+      this.logger.log(`[EXTRACT] ✅ Tokens — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`);
+      this.logger.log(`[EXTRACT] ✅ Finish: ${finishReason} | Length: ${result.length} chars`);
 
       if (finishReason === 'length') {
-        this.logger.warn(
-          `[EXTRACT] ⚠️ Output terpotong karena max_completion_tokens. Pertimbangkan naikkan limit.`,
-        );
+        this.logger.warn(`[EXTRACT] ⚠️ Output truncated. Increase max_completion_tokens.`);
       }
 
       if (result.trim().length < 30) {
@@ -148,68 +147,24 @@ FORMAT OUTPUT:
 
       return result.trim();
     } catch (e: any) {
-      // ── Full error logging ──
       if (e.response) {
-        // OpenAI API returned an error response
-        const status = e.response.status;
-        const errorData = e.response.data?.error;
-        const errorType = errorData?.type ?? 'unknown';
-        const errorCode = errorData?.code ?? 'unknown';
+        const status       = e.response.status;
+        const errorData    = e.response.data?.error;
         const errorMessage = errorData?.message ?? 'No message';
 
-        this.logger.error(`[EXTRACT] ❌ OpenAI API Error:`);
-        this.logger.error(`[EXTRACT]    HTTP Status: ${status}`);
-        this.logger.error(`[EXTRACT]    Error Type: ${errorType}`);
-        this.logger.error(`[EXTRACT]    Error Code: ${errorCode}`);
-        this.logger.error(`[EXTRACT]    Message: ${errorMessage}`);
-
-        if (status === 400) {
-          this.logger.error(
-            `[EXTRACT]    Hint: Cek apakah model "${this.model}" support PDF input, atau file terlalu besar`,
-          );
-        } else if (status === 401) {
-          this.logger.error(
-            `[EXTRACT]    Hint: API key tidak valid atau expired`,
-          );
-        } else if (status === 429) {
-          this.logger.error(
-            `[EXTRACT]    Hint: Rate limit tercapai, coba lagi nanti`,
-          );
-        } else if (status === 413) {
-          this.logger.error(
-            `[EXTRACT]    Hint: File PDF terlalu besar (${pdfBuffer.length} bytes)`,
-          );
-        }
-
-        // Log full response body for debugging
-        this.logger.error(
-          `[EXTRACT]    Full error body: ${JSON.stringify(e.response.data).slice(0, 500)}`,
-        );
-
-        throw new BadRequestException(
-          `Gagal extract PDF (${status}): ${errorMessage}`,
-        );
+        this.logger.error(`[EXTRACT] ❌ OpenAI API Error (${status}): ${errorMessage}`);
+        this.logger.error(`[EXTRACT] Body: ${JSON.stringify(e.response.data).slice(0, 500)}`);
+        throw new BadRequestException(`Gagal extract PDF (${status}): ${errorMessage}`);
       } else if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
-        this.logger.error(`[EXTRACT] ❌ Timeout: request melebihi 120 detik`);
-        this.logger.error(`[EXTRACT]    PDF size: ${pdfBuffer.length} bytes`);
-        throw new BadRequestException(
-          'Gagal extract PDF: timeout (file mungkin terlalu besar)',
-        );
+        this.logger.error(`[EXTRACT] ❌ Timeout`);
+        throw new BadRequestException('Gagal extract PDF: timeout');
       } else if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED') {
-        this.logger.error(
-          `[EXTRACT] ❌ Network error: ${e.code} - ${e.message}`,
-        );
-        throw new BadRequestException(
-          'Gagal extract PDF: tidak bisa terhubung ke OpenAI API',
-        );
+        this.logger.error(`[EXTRACT] ❌ Network error: ${e.code}`);
+        throw new BadRequestException('Gagal extract PDF: tidak bisa terhubung ke OpenAI API');
       } else {
-        this.logger.error(`[EXTRACT] ❌ Unexpected error: ${e.message}`);
-        this.logger.error(`[EXTRACT]    Stack: ${e.stack?.slice(0, 300)}`);
+        this.logger.error(`[EXTRACT] ❌ Unexpected: ${e.message}`);
         throw new BadRequestException('Gagal extract PDF: ' + e.message);
       }
     }
   }
 }
-
-// Backward compatibility
-export { PdfExtractorService as DocxExtractorService };

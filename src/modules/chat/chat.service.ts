@@ -44,7 +44,7 @@ export class ChatService {
           {
             role: 'system',
             content:
-              'Buat judul singkat (maks 5 kata, bahasa Indonesia) dari pertanyaan berikut. ' +
+              'Buat judul singkat (maks 5 kata) dari pertanyaan berikut. ' +
               'Balas hanya judulnya saja, tanpa tanda kutip, tanpa penjelasan.',
           },
           { role: 'user', content: firstMessage },
@@ -280,16 +280,26 @@ export class ChatService {
       const rlmCost  = calcTokenCost({
         root_input_tokens:  rlmLog.root_input_tokens,
         root_output_tokens: rlmLog.root_output_tokens,
+        root_cached_input_tokens: rlmLog.root_cached_input_tokens,
         sub_input_tokens:   rlmLog.sub_input_tokens,
         sub_output_tokens:  rlmLog.sub_output_tokens,
+        sub_cached_input_tokens:  rlmLog.sub_cached_input_tokens,
       });
       const convCost = calcTokenCost({
         root_input_tokens:  convLog.root_input_tokens,
         root_output_tokens: convLog.root_output_tokens,
+        root_cached_input_tokens: convLog.root_cached_input_tokens,
         sub_input_tokens:   0,
         sub_output_tokens:  0,
       });
       const costSavings = convCost.total_cost_usd - rlmCost.total_cost_usd;
+
+      // ── Response time per row ──
+      const rlmTime  = rlmLog.response_time_ms  ?? 0;
+      const convTime = convLog.response_time_ms ?? 0;
+      const timeDiff = Math.abs(rlmTime - convTime);
+      const timeFaster: 'RLM' | 'CONV' | 'SAMA' =
+        timeDiff === 0 ? 'SAMA' : rlmTime < convTime ? 'RLM' : 'CONV';
 
       rows.push({
         message_id:        aMsg.id,
@@ -305,9 +315,10 @@ export class ChatService {
           root_output_tokens: rlmLog.root_output_tokens,
           sub_input_tokens:   rlmLog.sub_input_tokens,
           sub_output_tokens:  rlmLog.sub_output_tokens,
+          response_time_ms:   rlmTime,
           cost: {
             root: {
-              model:           'gpt-5.1',
+              model:           'gpt-5.4',
               input_cost_usd:  formatUsd(rlmCost.root.input_cost_usd),
               output_cost_usd: formatUsd(rlmCost.root.output_cost_usd),
               total_cost_usd:  formatUsd(rlmCost.root.total_cost_usd),
@@ -322,11 +333,12 @@ export class ChatService {
           },
         },
         conv: {
-          input_tokens:  convLog.input_tokens,
-          output_tokens: convLog.output_tokens,
-          total_tokens:  convTotal,
+          input_tokens:     convLog.input_tokens,
+          output_tokens:    convLog.output_tokens,
+          total_tokens:     convTotal,
+          response_time_ms: convTime,
           cost: {
-            model:           'gpt-5.1',
+            model:           'gpt-5.4',
             input_cost_usd:  formatUsd(convCost.root.input_cost_usd),
             output_cost_usd: formatUsd(convCost.root.output_cost_usd),
             total_cost_usd:  formatUsd(convCost.total_cost_usd),
@@ -339,6 +351,8 @@ export class ChatService {
           token_savings:          savings,
           percentage_saved:       percentageSaved,
           cost_savings_usd:       formatUsd(costSavings),
+          response_time_diff_ms:  timeDiff,
+          response_time_faster:   timeFaster,
         },
       });
     }
@@ -353,8 +367,14 @@ export class ChatService {
     const totalSavings       = totalConvTokens - totalRlmTokens;
     const totalRlmRootInput  = rows.reduce((s, r) => s + r.rlm.root_input_tokens,  0);
     const totalRlmRootOutput = rows.reduce((s, r) => s + r.rlm.root_output_tokens, 0);
+    const totalRlmRootCached = rows.reduce((s, r) => s + (r.rlm.root_cached_input_tokens ?? 0), 0);
     const totalRlmSubInput   = rows.reduce((s, r) => s + r.rlm.sub_input_tokens,   0);
     const totalRlmSubOutput  = rows.reduce((s, r) => s + r.rlm.sub_output_tokens,  0);
+    const totalRlmSubCached  = rows.reduce((s, r) => s + (r.rlm.sub_cached_input_tokens ?? 0), 0);
+    const totalConvCached    = rows.reduce((s, r) => s + (r.conv.cached_input_tokens ?? 0), 0);
+
+    const totalRlmCacheHitPct  = totalRlmInput > 0 ? (((totalRlmRootCached + totalRlmSubCached) / totalRlmInput) * 100).toFixed(1) + '%': '0.0%';
+    const totalConvCacheHitPct = totalConvInput > 0 ? ((totalConvCached / totalConvInput) * 100).toFixed(1) + '%': '0.0%';
 
     const avgEfficiencyRatio  = rows.length > 0
       ? Math.round((rows.reduce((s, r) => s + r.efficiency.total_efficiency_ratio, 0) / rows.length) * 1000) / 1000
@@ -369,6 +389,30 @@ export class ChatService {
       ? ((totalSavings / totalConvTokens) * 100).toFixed(1) + '%'
       : '0%';
 
+    // ── Summary response time ────────────────────────────
+    const avgRlmResponseTime = rows.length > 0
+      ? Math.round(rows.reduce((s, r) => s + (r.rlm.response_time_ms ?? 0), 0) / rows.length)
+      : 0;
+    const avgConvResponseTime = rows.length > 0
+      ? Math.round(rows.reduce((s, r) => s + (r.conv.response_time_ms ?? 0), 0) / rows.length)
+      : 0;
+    const minRlmResponseTime = rows.length > 0
+      ? Math.min(...rows.map((r) => r.rlm.response_time_ms ?? 0))
+      : 0;
+    const maxRlmResponseTime = rows.length > 0
+      ? Math.max(...rows.map((r) => r.rlm.response_time_ms ?? 0))
+      : 0;
+    const minConvResponseTime = rows.length > 0
+      ? Math.min(...rows.map((r) => r.conv.response_time_ms ?? 0))
+      : 0;
+    const maxConvResponseTime = rows.length > 0
+      ? Math.max(...rows.map((r) => r.conv.response_time_ms ?? 0))
+      : 0;
+    const avgTimeDiff = Math.abs(avgRlmResponseTime - avgConvResponseTime);
+    const avgTimeFaster: 'RLM' | 'CONV' | 'SAMA' =
+      avgTimeDiff === 0 ? 'SAMA' : avgRlmResponseTime < avgConvResponseTime ? 'RLM' : 'CONV';
+
+    // ── Cost ─────────────────────────────────────────────
     const totalRlmCost  = calcTokenCost({
       root_input_tokens:  totalRlmRootInput,
       root_output_tokens: totalRlmRootOutput,
@@ -390,6 +434,7 @@ export class ChatService {
       sop_query_count: rows.length,
       rows,
       summary: {
+        // Token
         total_rlm_input_tokens:       totalRlmInput,
         total_rlm_output_tokens:      totalRlmOutput,
         total_rlm_tokens:             totalRlmTokens,
@@ -401,14 +446,35 @@ export class ChatService {
         avg_output_efficiency:        avgOutputEfficiency,
         avg_efficiency_ratio:         avgEfficiencyRatio,
         avg_percentage_saved:         avgPercentageSaved,
+        total_rlm_cached_input_tokens:  totalRlmRootCached + totalRlmSubCached,
+        total_conv_cached_input_tokens: totalConvCached,
+        rlm_cache_hit_rate:             totalRlmCacheHitPct,
+        conv_cache_hit_rate:            totalConvCacheHitPct,
+        // Token breakdown RLM per model
         total_rlm_root_input_tokens:  totalRlmRootInput,
         total_rlm_root_output_tokens: totalRlmRootOutput,
         total_rlm_sub_input_tokens:   totalRlmSubInput,
         total_rlm_sub_output_tokens:  totalRlmSubOutput,
+        // Response time
+        response_time: {
+          rlm: {
+            avg_ms: avgRlmResponseTime,
+            min_ms: minRlmResponseTime,
+            max_ms: maxRlmResponseTime,
+          },
+          conv: {
+            avg_ms: avgConvResponseTime,
+            min_ms: minConvResponseTime,
+            max_ms: maxConvResponseTime,
+          },
+          avg_diff_ms: avgTimeDiff,
+          avg_faster:  avgTimeFaster,
+        },
+        // Cost
         cost: {
           rlm: {
             root: {
-              model:           'gpt-5.1',
+              model:           'gpt-5.4',
               input_cost_usd:  formatUsd(totalRlmCost.root.input_cost_usd),
               output_cost_usd: formatUsd(totalRlmCost.root.output_cost_usd),
               total_cost_usd:  formatUsd(totalRlmCost.root.total_cost_usd),
@@ -422,7 +488,7 @@ export class ChatService {
             total_cost_usd: formatUsd(totalRlmCost.total_cost_usd),
           },
           conv: {
-            model:           'gpt-5.1',
+            model:           'gpt-5.4',
             input_cost_usd:  formatUsd(totalConvCost.root.input_cost_usd),
             output_cost_usd: formatUsd(totalConvCost.root.output_cost_usd),
             total_cost_usd:  formatUsd(totalConvCost.total_cost_usd),

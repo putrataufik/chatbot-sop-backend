@@ -563,6 +563,41 @@
         ]
       }
     },
+    "/api/chatbot-sop/chat/sessions/{id}/rename": {
+      "patch": {
+        "operationId": "ChatController_renameSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nama session berhasil diubah"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Session tidak ditemukan"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Ganti nama session chat",
+        "tags": [
+          "Chat"
+        ]
+      }
+    },
     "/api/chatbot-sop/chat/sessions/{id}/messages": {
       "get": {
         "operationId": "ChatController_findMessages",
@@ -727,7 +762,6 @@
     },
     "/api/chatbot-sop/chat/sessions/{sessionId}/token-comparison": {
       "get": {
-        "description": "Mengembalikan semua baris perbandingan token (hanya SOP_QUERY) beserta isi chat (user_content & assistant_content) dan summary agregat. Kolom: Input Token RLM/CONV, Output Token RLM/CONV, Input Efficiency, Output Efficiency, Total Token RLM/CONV, Efficiency Ratio CONV/RLM.",
         "operationId": "ChatController_getSessionTokenComparison",
         "parameters": [
           {

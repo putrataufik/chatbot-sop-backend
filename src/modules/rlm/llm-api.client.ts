@@ -9,8 +9,9 @@ export interface ChatMessage {
 
 export interface LLMResponse {
   content: string;
-  input_tokens: number;
+  input_tokens: number;        // total prompt tokens (sudah include cached)
   output_tokens: number;
+  cached_input_tokens: number; // bagian input yang kena cache hit
 }
 
 @Injectable()
@@ -26,12 +27,8 @@ export class LlmApiClient {
   constructor(private configService: ConfigService) {
     this.apiKey = this.configService.get<string>('OPENAI_API_KEY') as string;
     this.model = this.configService.get<string>('OPENAI_MODEL') as string;
-    this.modelMini = this.configService.get<string>(
-      'OPENAI_MODEL_MINI',
-    ) as string;
-    this.modelNano = this.configService.get<string>(
-      'OPENAI_MODEL_NANO',
-    ) as string;
+    this.modelMini = this.configService.get<string>('OPENAI_MODEL_MINI') as string;
+    this.modelNano = this.configService.get<string>('OPENAI_MODEL_NANO') as string;
     this.maxTokensRoot = parseInt(
       this.configService.get<string>('OPENAI_MAX_TOKENS_ROOT') ?? '100000',
     );
@@ -44,32 +41,43 @@ export class LlmApiClient {
     messages: ChatMessage[],
     model: string,
     maxTokens: number,
+    cacheKey?: string,
   ): Promise<LLMResponse> {
     console.log(`[LLM] 🚀 Querying model: ${model}`);
     console.log(`[LLM] 📨 Messages count: ${messages.length}`);
 
-    const response = await axios.post(
-      this.apiUrl,
-      {
-        model,
-        messages,
-        max_completion_tokens: maxTokens,
+    const body: any = {
+      model,
+      messages,
+      max_completion_tokens: maxTokens,
+    };
+
+    // Sticky routing untuk meningkatkan cache hit rate
+    if (cacheKey) {
+      body.prompt_cache_key = cacheKey;
+    }
+
+    const response = await axios.post(this.apiUrl, body, {
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
       },
-      {
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
+    });
 
     const choice = response.data.choices[0];
     const usage = response.data.usage;
     const content = choice.message.content ?? '';
 
+    // Tangkap cached tokens dari prompt_tokens_details
+    const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const cacheHitPct =
+      usage.prompt_tokens > 0
+        ? ((cachedTokens / usage.prompt_tokens) * 100).toFixed(1)
+        : '0.0';
+
     console.log(`[LLM] ✅ Response received`);
     console.log(
-      `[LLM] 📊 Tokens → input: ${usage.prompt_tokens}, output: ${usage.completion_tokens}`,
+      `[LLM] 📊 Tokens → input: ${usage.prompt_tokens} (cached: ${cachedTokens} / ${cacheHitPct}%), output: ${usage.completion_tokens}`,
     );
     console.log(`[LLM] 💬 Content raw length: ${content.length}`);
     console.log(`[LLM] 💬 Content preview: "${content.slice(0, 200)}"`);
@@ -78,50 +86,44 @@ export class LlmApiClient {
       content,
       input_tokens: usage.prompt_tokens,
       output_tokens: usage.completion_tokens,
+      cached_input_tokens: cachedTokens,
     };
   }
 
-  // Root LM → untuk dekomposisi & sintesis RLM
   async queryRootLM(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] 🧠 ROOT LM called (${this.model})`);
-    return this.queryModel(messages, this.model, this.maxTokensRoot);
+    return this.queryModel(messages, this.model, this.maxTokensRoot, 'rootlm-sop');
   }
 
-  // Conv LM → untuk baseline konvensional (same model & max tokens as Root LM)
   async queryConvLM(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] 🏛️ CONV LM called (${this.model})`);
-    return this.queryModel(messages, this.model, this.maxTokensRoot);
+    return this.queryModel(messages, this.model, this.maxTokensRoot, 'convlm-sop');
   }
 
-  // Sub LM → untuk inferensi konteks dokumen
-  async querySubLM(
-    systemPrompt: string,
-    userPrompt: string,
-  ): Promise<LLMResponse> {
+  async querySubLM(systemPrompt: string, userPrompt: string): Promise<LLMResponse> {
     console.log(`\n[LLM] 🔬 SUB LM called (${this.modelMini})`);
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ];
-    return this.queryModel(messages, this.modelMini, this.maxTokensSub);
+    return this.queryModel(messages, this.modelMini, this.maxTokensSub, 'sublm-sop');
   }
 
-  // Mini LM → untuk jawaban kontekstual dari history
   async queryMiniLM(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] 💬 MINI LM called (${this.modelMini})`);
-    return this.queryModel(messages, this.modelMini, 4000);
+    return this.queryModel(messages, this.modelMini, 4000, 'minilm-contextual');
   }
 
-  // Nano LM → untuk klasifikasi intent & chitchat
   async queryNano(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] ⚡ NANO called (${this.modelNano})`);
-    return this.queryModel(messages, this.modelNano, 500);
+    return this.queryModel(messages, this.modelNano, 500, 'nano-intent');
   }
 
   async queryNanoShort(messages: ChatMessage[]): Promise<LLMResponse> {
     console.log(`\n[LLM] ⚡ NANO SHORT called (${this.modelNano})`);
-    return this.queryModel(messages, this.modelNano, 500);
+    return this.queryModel(messages, this.modelNano, 500, 'nano-chitchat');
   }
+
   estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
   }
