@@ -1,5 +1,5 @@
 // FILE: src/modules/sop-documents/pdf-extractor.service.ts
-// PDF Extractor v11 — RRF v2: ringkas, general, language-preserving
+// PDF Extractor v11 — konversi PDF ke format teks terstruktur menggunakan tag
 
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -14,7 +14,7 @@ export class PdfExtractorService {
 
   constructor(private configService: ConfigService) {
     this.apiKey = this.configService.get<string>('OPENAI_API_KEY') as string;
-    this.model  = this.configService.get<string>('OPENAI_MODEL') ?? 'gpt-4o-mini';
+    this.model = this.configService.get<string>('OPENAI_MODEL') ?? 'gpt-5-mini';
   }
 
   async extract(pdfBuffer: Buffer): Promise<string> {
@@ -22,13 +22,15 @@ export class PdfExtractorService {
       throw new BadRequestException('File PDF kosong atau terlalu kecil');
     }
 
-    this.logger.log(`[EXTRACT] PDF size: ${pdfBuffer.length} bytes, model: ${this.model}`);
+    this.logger.log(
+      `[EXTRACT] PDF size: ${pdfBuffer.length} bytes, model: ${this.model}`,
+    );
 
     const base64Pdf = pdfBuffer.toString('base64');
 
-    const systemPrompt = `Convert SOP documents into RRF (RLM-Ready Format). RRF is a structured tag-based format for reliable retrieval.
+    const systemPrompt = `Convert SOP documents into a structured tag-based text format designed for reliable retrieval. The output uses fixed tags such as [DOC], [META], [SEC], [INFO], and [STEP] to preserve hierarchy, metadata, and procedural steps from the original document.
 
-═══ RRF SCHEMA ═══
+═══ OUTPUT SCHEMA ═══
 
 [DOC] title=<title> | lang=<en|id|other>
 
@@ -93,7 +95,7 @@ note:
 
 ═══
 
-Now convert the provided document. Output ONLY the RRF — no preamble, no markdown fences.`;
+Now convert the provided document. Output ONLY the structured text in the schema above — no preamble, no markdown fences.`;
 
     try {
       const response = await axios.post(
@@ -114,7 +116,7 @@ Now convert the provided document. Output ONLY the RRF — no preamble, no markd
                 },
                 {
                   type: 'text',
-                  text: 'Convert this SOP into RRF. Include every step, actor, time, condition, and form. Preserve original language and order. Output RRF only.',
+                  text: 'Convert this SOP into the structured tag-based text format defined in the system prompt. Include every step, actor, time, condition, and form. Preserve original language and order. Output the structured text only.',
                 },
               ],
             },
@@ -129,15 +131,21 @@ Now convert the provided document. Output ONLY the RRF — no preamble, no markd
         },
       );
 
-      const result       = response.data.choices[0]?.message?.content ?? '';
-      const tokens       = response.data.usage;
+      const result = response.data.choices[0]?.message?.content ?? '';
+      const tokens = response.data.usage;
       const finishReason = response.data.choices[0]?.finish_reason;
 
-      this.logger.log(`[EXTRACT] ✅ Tokens — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`);
-      this.logger.log(`[EXTRACT] ✅ Finish: ${finishReason} | Length: ${result.length} chars`);
+      this.logger.log(
+        `[EXTRACT] ✅ Tokens — input: ${tokens.prompt_tokens}, output: ${tokens.completion_tokens}`,
+      );
+      this.logger.log(
+        `[EXTRACT] ✅ Finish: ${finishReason} | Length: ${result.length} chars`,
+      );
 
       if (finishReason === 'length') {
-        this.logger.warn(`[EXTRACT] ⚠️ Output truncated. Increase max_completion_tokens.`);
+        this.logger.warn(
+          `[EXTRACT] ⚠️ Output truncated. Increase max_completion_tokens.`,
+        );
       }
 
       if (result.trim().length < 30) {
@@ -148,19 +156,27 @@ Now convert the provided document. Output ONLY the RRF — no preamble, no markd
       return result.trim();
     } catch (e: any) {
       if (e.response) {
-        const status       = e.response.status;
-        const errorData    = e.response.data?.error;
+        const status = e.response.status;
+        const errorData = e.response.data?.error;
         const errorMessage = errorData?.message ?? 'No message';
 
-        this.logger.error(`[EXTRACT] ❌ OpenAI API Error (${status}): ${errorMessage}`);
-        this.logger.error(`[EXTRACT] Body: ${JSON.stringify(e.response.data).slice(0, 500)}`);
-        throw new BadRequestException(`Gagal extract PDF (${status}): ${errorMessage}`);
+        this.logger.error(
+          `[EXTRACT] ❌ OpenAI API Error (${status}): ${errorMessage}`,
+        );
+        this.logger.error(
+          `[EXTRACT] Body: ${JSON.stringify(e.response.data).slice(0, 500)}`,
+        );
+        throw new BadRequestException(
+          `Gagal extract PDF (${status}): ${errorMessage}`,
+        );
       } else if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
         this.logger.error(`[EXTRACT] ❌ Timeout`);
         throw new BadRequestException('Gagal extract PDF: timeout');
       } else if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED') {
         this.logger.error(`[EXTRACT] ❌ Network error: ${e.code}`);
-        throw new BadRequestException('Gagal extract PDF: tidak bisa terhubung ke OpenAI API');
+        throw new BadRequestException(
+          'Gagal extract PDF: tidak bisa terhubung ke OpenAI API',
+        );
       } else {
         this.logger.error(`[EXTRACT] ❌ Unexpected: ${e.message}`);
         throw new BadRequestException('Gagal extract PDF: ' + e.message);
