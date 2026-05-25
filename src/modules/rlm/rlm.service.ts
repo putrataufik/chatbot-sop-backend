@@ -17,7 +17,7 @@ import { SopDocumentsService } from '../sop-documents/sop-documents.service';
 import { MessageRole } from '../chat/entities/message.entity';
 import { calcTokenCost, formatUsd } from './helpers/token-price.helper';
 
-export type IntentType = 'CHITCHAT' | 'CONTEXTUAL' | 'SOP_QUERY';
+export type IntentType = 'CHITCHAT' | 'SOP_QUERY';
 
 export interface TokenComparisonResult {
   message_id: number;
@@ -157,9 +157,8 @@ export class RlmService {
       {
         role: 'system',
         content: `Classify the message into exactly one label:
-CHITCHAT = greetings, thanks, small talk.
-CONTEXTUAL = follow-up referring to previous turns.
-SOP_QUERY = new question about SOP / procedure / policy.
+CHITCHAT = greetings, thanks, small talk, self-introduction, or pleasantries that do NOT require any SOP/procedure information (e.g., "halo", "terima kasih", "siapa kamu?").
+SOP_QUERY = any substantive question, including follow-ups that reference prior turns (e.g., "jelaskan lagi", "berikan contohnya", "bagaimana prosedur cuti?"). When in doubt, choose SOP_QUERY.
 Reply with ONE word only.`,
       },
       {
@@ -172,18 +171,15 @@ Reply with ONE word only.`,
       const response = await this.llmApiClient.queryNano(messages);
       const raw = response.content.trim().toUpperCase();
 
-      // ── Tambahkan blok ini ──
       if (!raw) {
         console.log(
           '[INTENT] Empty response from classifier, defaulting to SOP_QUERY',
         );
         return 'SOP_QUERY';
       }
-      // ────────────────────────
 
       console.log(`[INTENT] Classified as: ${raw}`);
       if (raw.includes('CHITCHAT')) return 'CHITCHAT';
-      if (raw.includes('CONTEXTUAL')) return 'CONTEXTUAL';
       return 'SOP_QUERY';
     } catch {
       console.log('[INTENT] Classification failed, defaulting to SOP_QUERY');
@@ -198,7 +194,12 @@ Reply with ONE word only.`,
   private async answerChitchat(
     userQuestion: string,
     chatHistory: { role: 'user' | 'assistant'; content: string }[],
-  ): Promise<{ content: string; input_tokens: number; output_tokens: number, cached_input_tokens: number; }> {
+  ): Promise<{
+    content: string;
+    input_tokens: number;
+    output_tokens: number;
+    cached_input_tokens: number;
+  }> {
     console.log('[RLM SERVICE] 💬 Handling as CHITCHAT');
 
     const recentHistory = chatHistory.slice(-2).map((m) => ({
@@ -216,35 +217,6 @@ Reply with ONE word only.`,
     ];
 
     return this.llmApiClient.queryNanoShort(messages);
-  }
-
-  // ══════════════════════════════════════════════════════
-  // CONTEXTUAL HANDLER (language-agnostic)
-  // ══════════════════════════════════════════════════════
-
-  private async answerContextual(
-    userQuestion: string,
-    chatHistory: { role: 'user' | 'assistant'; content: string }[],
-  ): Promise<{ content: string; input_tokens: number; output_tokens: number, cached_input_tokens: number; }> {
-    const trimmedHistory = chatHistory.slice(-6).map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content:
-        m.role === 'assistant'
-          ? m.content.slice(0, 1500) +
-            (m.content.length > 1500 ? '\n...[truncated]' : '')
-          : m.content,
-    }));
-
-    const messages: ChatMessage[] = [
-      {
-        role: 'system',
-        content: `You are SOP Intellect, an HR assistant. Answer based on the conversation context. Reply in the SAME language as the user. Use Markdown.`,
-      },
-      ...trimmedHistory,
-      { role: 'user' as const, content: userQuestion },
-    ];
-
-    return this.llmApiClient.queryMiniLM(messages);
   }
 
   // ══════════════════════════════════════════════════════
@@ -320,17 +292,6 @@ Reply with ONE word only.`,
       rootInputTokens = result.input_tokens;
       rootOutputTokens = result.output_tokens;
       rootCachedInputTokens = result.cached_input_tokens;
-    } else if (intent === 'CONTEXTUAL') {
-      const t0 = Date.now();
-      const result = await this.answerContextual(userQuestion, chatHistory);
-      rlmResponseTimeMs = Date.now() - t0;
-
-      answerContent = result.content;
-      totalInputTokens = result.input_tokens;
-      totalOutputTokens = result.output_tokens;
-      subInputTokens = result.input_tokens;
-      subOutputTokens = result.output_tokens;
-      subCachedInputTokens = result.cached_input_tokens;
     } else {
       // ── SOP_QUERY → run RLM & CONV in parallel, measure each independently ──
       const allDocuments = await this.sopDocumentsService.findAllMetadata();
@@ -476,7 +437,10 @@ Reply with ONE word only.`,
           output_tokens: convResult.output_tokens,
           root_input_tokens: convResult.input_tokens,
           root_output_tokens: convResult.output_tokens,
-          root_cached_input_tokens: convResult.cached_input_tokens ?? 0,
+
+          // PERBAIKAN: Pastikan tidak ada properti 'cached' yang terselip dari convResult
+          root_cached_input_tokens: 0,
+
           sub_input_tokens: 0,
           sub_output_tokens: 0,
           sub_cached_input_tokens: 0,
@@ -614,7 +578,7 @@ Reply with ONE word only.`,
     const convCost = calcTokenCost({
       root_input_tokens: convLog.root_input_tokens,
       root_output_tokens: convLog.root_output_tokens,
-      root_cached_input_tokens: convLog.root_cached_input_tokens,
+      root_cached_input_tokens: convLog.root_cached_input_tokens ?? 0,
       sub_input_tokens: 0,
       sub_output_tokens: 0,
     });
