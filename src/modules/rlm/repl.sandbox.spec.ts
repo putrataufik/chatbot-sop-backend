@@ -162,8 +162,10 @@ describe('ReplSandbox', () => {
 
   describe('FINAL_VAR()', () => {
     it('should resolve variable name to its value as finalAnswer', async () => {
+      // Use implicit global (no var/let/const) so the variable becomes a
+      // property of the VM context object and is accessible after the IIFE.
       const result = await sandbox.execute(
-        'let myResult = "jawaban dari variabel"; FINAL_VAR("myResult")',
+        'myResult = "jawaban dari variabel"; FINAL_VAR("myResult")',
         mockLlmQuery,
         mockLoadDocument,
       );
@@ -173,8 +175,9 @@ describe('ReplSandbox', () => {
     });
 
     it('should JSON-stringify non-string variables', async () => {
+      // Same: implicit global so it's on ctx after execution.
       const result = await sandbox.execute(
-        'let data = { key: "val" }; FINAL_VAR("data")',
+        'data = { key: "val" }; FINAL_VAR("data")',
         mockLlmQuery,
         mockLoadDocument,
       );
@@ -528,7 +531,9 @@ describe('ReplSandbox', () => {
 
   describe('Persistent variables', () => {
     it('should persist user-defined variables across executions', async () => {
-      await sandbox.execute('var myVar = "persisted"', mockLlmQuery, mockLoadDocument);
+      // Implicit global (no var/let/const) becomes a ctx property, gets saved
+      // to persistentVars, and is restored in the next sandbox.execute() call.
+      await sandbox.execute('myVar = "persisted"', mockLlmQuery, mockLoadDocument);
 
       const result = await sandbox.execute('print(myVar)', mockLlmQuery, mockLoadDocument);
 
