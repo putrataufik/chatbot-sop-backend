@@ -230,6 +230,56 @@ describe('RlmService', () => {
 
       expect(chatService.updateSessionTitle).not.toHaveBeenCalled();
     });
+
+    it('should include recent chat history in chitchat handling', async () => {
+      chatService.getRecentMessages.mockResolvedValue([
+        makeUserMessage({ content: 'Pesan lama 1' }) as any,
+        makeAssistantMessage({ content: 'Balasan lama' }) as any,
+      ]);
+
+      const result = await service.sendMessage(1, 'Terima kasih');
+
+      // recentHistory branch (chatHistory.slice(-2).map) is exercised
+      expect(result.meta.intent).toBe('CHITCHAT');
+      const messages = llmApiClient.queryNanoShort.mock.calls[0][0];
+      // system + up to 2 history + current user message
+      expect(messages.length).toBeGreaterThanOrEqual(2);
+      expect(messages[messages.length - 1].content).toBe('Terima kasih');
+    });
+  });
+
+  describe('sendMessage() — empty classifier response', () => {
+    it('should default to SOP_QUERY when classifier returns empty content', async () => {
+      chatService.getRecentMessages.mockResolvedValue([]);
+      chatService.saveMessage.mockImplementation(async (_sid, content, role) =>
+        role === MessageRole.USER
+          ? (makeUserMessage({ content }) as any)
+          : (makeAssistantMessage({ content }) as any),
+      );
+      chatService.updateSessionTitle.mockResolvedValue(undefined);
+
+      // Empty classifier output → defaults to SOP_QUERY
+      llmApiClient.queryNano.mockResolvedValue(makeLlmResponse('   '));
+
+      sopDocumentsService.findAllMetadata.mockResolvedValue([
+        { id: 1, title: 'SOP', file_size: 100 },
+      ]);
+      sopDocumentsService.findById.mockResolvedValue({
+        id: 1,
+        content: 'Isi',
+        uploaded_by_user: { id: 1, name: 'Admin' },
+      });
+      rlmEngine.process.mockResolvedValue(makeRlmResult() as any);
+      conventionalService.process.mockResolvedValue(makeConvResult() as any);
+      tokenLogRepo.create.mockImplementation((d: any) => d);
+      tokenLogRepo.save.mockResolvedValue({});
+      subQueryRepo.create.mockImplementation((d: any) => d);
+      subQueryRepo.save.mockResolvedValue({});
+
+      const result = await service.sendMessage(1, 'Pertanyaan?');
+
+      expect(result.meta.intent).toBe('SOP_QUERY');
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -491,6 +541,38 @@ describe('RlmService', () => {
       const result = await service.getTokenComparison(5);
 
       expect(result.rlm.cache_hit_rate).toContain('%');
+    });
+
+    it('should mark CONV as faster when its response time is lower', async () => {
+      const rlmLog = makeTokenLog(TokenMethod.RLM, { response_time_ms: 3000 });
+      const convLog = makeTokenLog(TokenMethod.CONV, { response_time_ms: 1000 });
+      tokenLogRepo.find.mockResolvedValue([rlmLog, convLog]);
+
+      const result = await service.getTokenComparison(5);
+
+      expect(result.comparison.response_time_faster).toBe('CONV');
+    });
+
+    it('should report 0% cache hit rate when token counts are zero', async () => {
+      const rlmLog = makeTokenLog(TokenMethod.RLM, {
+        input_tokens: 0,
+        output_tokens: 0,
+        root_cached_input_tokens: 0,
+        sub_cached_input_tokens: 0,
+      });
+      const convLog = makeTokenLog(TokenMethod.CONV, {
+        input_tokens: 0,
+        output_tokens: 0,
+        root_cached_input_tokens: 0,
+      });
+      tokenLogRepo.find.mockResolvedValue([rlmLog, convLog]);
+
+      const result = await service.getTokenComparison(5);
+
+      expect(result.rlm.cache_hit_rate).toBe('0.0%');
+      expect(result.conv.cache_hit_rate).toBe('0.0%');
+      expect(result.comparison.efficiency_ratio).toBe(0);
+      expect(result.comparison.percentage_saved).toBe('0%');
     });
   });
 });

@@ -559,5 +559,58 @@ describe('ChatService', () => {
 
       expect(result.session_id).toBe(1);
     });
+
+    it('should handle zero RLM tokens and varied response times across rows', async () => {
+      const user = makeUser();
+      const session = makeSession({ user });
+      sessionRepo.findOne.mockResolvedValue(session);
+
+      // Row 1: RLM faster (rlm time < conv time)
+      const u1 = makeMessage({ id: 1, role: MessageRole.USER, content: 'Q1' });
+      const a1 = makeMessage({
+        id: 2,
+        role: MessageRole.ASSISTANT,
+        content: 'A1',
+        token_usage_logs: [
+          buildTokenLog(TokenMethod.RLM, { input_tokens: 500, output_tokens: 100, response_time_ms: 800 }),
+          buildTokenLog(TokenMethod.CONV, {
+            input_tokens: 2000,
+            output_tokens: 300,
+            response_time_ms: 2000,
+            sub_input_tokens: 0,
+            sub_output_tokens: 0,
+          }),
+        ],
+      });
+
+      // Row 2: zero RLM tokens (hits the `> 0 ? : 0` false branches) and CONV faster
+      const u2 = makeMessage({ id: 3, role: MessageRole.USER, content: 'Q2' });
+      const a2 = makeMessage({
+        id: 4,
+        role: MessageRole.ASSISTANT,
+        content: 'A2',
+        token_usage_logs: [
+          buildTokenLog(TokenMethod.RLM, { input_tokens: 0, output_tokens: 0, response_time_ms: 3000 }),
+          buildTokenLog(TokenMethod.CONV, {
+            input_tokens: 0,
+            output_tokens: 0,
+            response_time_ms: 1000,
+            sub_input_tokens: 0,
+            sub_output_tokens: 0,
+          }),
+        ],
+      });
+
+      messageRepo.find.mockResolvedValue([u1, a1, u2, a2]);
+
+      const result = await service.getSessionTokenComparison(1, user as any);
+
+      expect(result.rows).toHaveLength(2);
+      expect(result.rows[0].efficiency.response_time_faster).toBe('RLM');
+      expect(result.rows[1].efficiency.response_time_faster).toBe('CONV');
+      // Zero-token row → efficiency ratios default to 0
+      expect(result.rows[1].efficiency.total_efficiency_ratio).toBe(0);
+      expect(result.rows[1].efficiency.percentage_saved).toBe('0%');
+    });
   });
 });
